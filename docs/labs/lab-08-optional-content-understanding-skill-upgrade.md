@@ -65,3 +65,30 @@ Discuss:
 - the app starts without strict-mode extractor errors
 - Blob + skillset enrichment completes
 - the enrichment index recorded in the job ends with `-content-understanding`
+
+## What To Inspect In This Repo
+
+```text
+Profile: content_understanding
+Built-in skill focus:
+- ContentUnderstandingSkill
+
+Retrieval focus:
+- hybrid
+- agentic
+```
+
+- [`backend/services/workshop_profiles.py`](../../backend/services/workshop_profiles.py)
+  The `content_understanding` profile declares the advanced extractor comparison track.
+- [`backend/services/search_skillset_enrichment.py`](../../backend/services/search_skillset_enrichment.py)
+  Inspect `_active_extractor_kind()`, `_build_extractor_skill()`, and `_build_skillset_body()`. This is where the Search-managed extractor flips from `document_extraction` to `content_understanding`.
+- [`backend/services/parsers.py`](../../backend/services/parsers.py)
+  Compare the app-managed Azure Content Understanding parser path with the Search-managed Content Understanding skill path so the audience sees that these are different integration layers.
+- [`backend/core/config.py`](../../backend/core/config.py)
+  Inspect the Content Understanding environment variables and the `azure_content_understanding_enabled` flag.
+
+## Learn References
+
+- [Document Layout skill for semantic chunking](https://learn.microsoft.com/en-us/azure/search/search-how-to-semantic-chunking)
+- [Chunk and vectorize content with the Azure Content Understanding skill](https://learn.microsoft.com/en-us/azure/search/search-how-to-semantic-chunking-content-understanding)
+- [Integrated vectorization](https://learn.microsoft.com/en-us/azure/search/search-how-to-integrated-vectorization)

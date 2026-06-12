@@ -78,3 +78,35 @@ Have the audience record:
 - Blob + skillset enrichment completes
 - the enrichment index recorded in the job ends with `-chunk-vector`
 - vector and hybrid search both return grounded results
+
+## What To Inspect In This Repo
+
+```text
+Profile: chunk_vector
+Built-in skill focus:
+- DocumentExtractionSkill
+- SplitSkill
+- AzureOpenAIEmbeddingSkill
+
+Retrieval focus:
+- full_text
+- vector
+- hybrid
+```
+
+- [`backend/services/workshop_profiles.py`](../../backend/services/workshop_profiles.py)
+  The `chunk_vector` profile is where the workshop declares that this lab adds `SplitSkill` and `AzureOpenAIEmbeddingSkill`.
+- [`backend/services/search_skillset_enrichment.py`](../../backend/services/search_skillset_enrichment.py)
+  Inspect `_profile_uses_split()`, `_profile_uses_embedding()`, `_build_split_skill()`, `_build_embedding_skill()`, and `_build_enrichment_index_body()`. Those methods wire chunk-aware indexing and integrated vectorization into the Search-managed enrichment lane.
+- [`backend/services/chunking.py`](../../backend/services/chunking.py)
+  This is the app-owned chunker. Compare it with the Search-managed `SplitSkill` lane so the audience understands the difference between canonical chunks owned by the app and enrichment chunks or vectors owned by Search.
+- [`backend/services/indexing.py`](../../backend/services/indexing.py)
+  Inspect `direct_search()` and `_run_direct_search()`. This is where the code chooses between lexical search, vector queries, and hybrid requests.
+
+## Learn References
+
+- [Chunk documents for vector search and agentic retrieval](https://learn.microsoft.com/en-us/azure/search/vector-search-how-to-chunk-documents)
+- [Text Split skill](https://learn.microsoft.com/en-us/azure/search/cognitive-search-skill-textsplit)
+- [Azure OpenAI Embedding skill](https://learn.microsoft.com/en-us/azure/search/cognitive-search-skill-azure-openai-embedding)
+- [Vector search overview](https://learn.microsoft.com/en-us/azure/search/vector-search-overview)
+- [Hybrid search overview](https://learn.microsoft.com/en-us/azure/search/hybrid-search-overview)

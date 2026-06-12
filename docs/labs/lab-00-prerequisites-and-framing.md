@@ -76,6 +76,39 @@ Only then should the workshop move to agentic retrieval as the official Azure AI
 - Azure CLI signed in
 - Python 3.11+
 
+## What To Inspect In This Repo
+
+```text
+Focus for this lab:
+- understand the workshop structure before running anything
+- understand the difference between ingestion-side changes and retrieval-side changes
+
+Primary files:
+- README.md
+- backend/services/workshop_profiles.py
+- backend/app.py
+- backend/services/pipeline.py
+- backend/services/indexing.py
+```
+
+- [`README.md`](../../README.md)
+  Explains the workshop sequence, retrieval modes, and the same-document comparison strategy.
+- [`backend/services/workshop_profiles.py`](../../backend/services/workshop_profiles.py)
+  Declares the progressive lab profiles and shows which built-in skills each lab adds.
+- [`backend/app.py`](../../backend/app.py)
+  Exposes the workshop profile summary through `/api/workshop/profiles` and the retrieval options through `/api/config`.
+- [`backend/services/pipeline.py`](../../backend/services/pipeline.py)
+  Shows the app-managed ingestion contract: parse, normalize, stitch, chunk, enrich, and publish.
+- [`backend/services/indexing.py`](../../backend/services/indexing.py)
+  Shows the four retrieval tracks implemented in the chat path: `full_text`, `vector`, `hybrid`, and `agentic`.
+
+## Learn References
+
+- [Azure AI Search overview](https://learn.microsoft.com/en-us/azure/search/search-what-is-azure-search)
+- [Skillset concepts](https://learn.microsoft.com/en-us/azure/search/cognitive-search-working-with-skillsets)
+- [Skills reference](https://learn.microsoft.com/en-us/azure/search/cognitive-search-predefined-skills)
+- [Agentic retrieval overview](https://learn.microsoft.com/en-us/azure/search/agentic-retrieval-overview)
+
 ## Suggested Opening Questions
 
 - `Why can't we just upload a PDF and chat over it?`

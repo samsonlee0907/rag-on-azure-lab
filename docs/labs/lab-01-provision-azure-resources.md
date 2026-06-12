@@ -80,3 +80,32 @@ Capture these values for `.env`:
 - Blob containers exist
 - Document Intelligence exists
 - Foundry resource is available
+
+## What To Inspect In This Repo
+
+```text
+Focus for this lab:
+- understand how the repo expects Azure resources to be named
+- understand which services are required by the workshop
+
+Primary files:
+- scripts/provision-azure.ps1
+- .env.example
+- backend/core/config.py
+- docs/environment-reference.md
+```
+
+- [`scripts/provision-azure.ps1`](../../scripts/provision-azure.ps1)
+  Provisions the resource group, Search service, Blob containers, Document Intelligence resource, and Foundry wiring expected by the workshop.
+- [`.env.example`](../../.env.example)
+  Shows which outputs from the provisioning step must be copied into environment variables.
+- [`backend/core/config.py`](../../backend/core/config.py)
+  Defines the runtime settings that decide whether Search, Blob ingestion, Document Intelligence, and the workshop profiles are actually enabled.
+- [`docs/environment-reference.md`](../environment-reference.md)
+  Explains how the environment variables map to the app behavior.
+
+## Learn References
+
+- [Azure AI Search overview](https://learn.microsoft.com/en-us/azure/search/search-what-is-azure-search)
+- [Skillset concepts](https://learn.microsoft.com/en-us/azure/search/cognitive-search-working-with-skillsets)
+- [Tutorial: skillsets](https://learn.microsoft.com/en-us/azure/search/tutorial-skillset)

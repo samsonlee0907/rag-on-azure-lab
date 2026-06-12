@@ -55,3 +55,29 @@ The point of this lab is not that agentic retrieval always returns more steps. T
 - the debug panel shows `retrieval_mode = agentic`
 - the activity panel shows retrieval routing and any exposed subqueries
 - the answer remains grounded with citations
+
+## What To Inspect In This Repo
+
+```text
+Retrieval mode focus:
+- agentic retrieval through an Azure AI Search knowledge base
+
+Primary files:
+- backend/services/indexing.py
+- backend/app.py
+- backend/services/chat.py
+```
+
+- [`backend/services/indexing.py`](../../backend/services/indexing.py)
+  Inspect `AzureSearchKnowledgeBaseAdapter.chat()`, `_route_knowledge_sources()`, and `_build_retrieve_payload()`. This is where the repo switches from direct `docs/search` calls to the knowledge-base `retrieve` action, including routing, knowledge-source selection, and answer-synthesis settings.
+- [`backend/app.py`](../../backend/app.py)
+  Inspect `chat()` to see how the UI retrieval selector routes `agentic` requests into the knowledge-base path instead of the direct search path.
+- [`backend/services/chat.py`](../../backend/services/chat.py)
+  Inspect the grounded answer and citation assembly path so the audience can understand how retrieved evidence becomes the final chat answer and debug panel output.
+
+## Learn References
+
+- [Agentic retrieval overview](https://learn.microsoft.com/en-us/azure/search/agentic-retrieval-overview)
+- [Query a knowledge base via APIs](https://learn.microsoft.com/en-us/azure/search/agentic-retrieval-how-to-retrieve)
+- [Enable answer synthesis](https://learn.microsoft.com/en-us/azure/search/agentic-retrieval-how-to-answer-synthesis)
+- [Quickstart: agentic retrieval in the Azure portal](https://learn.microsoft.com/en-us/azure/search/get-started-portal-agentic-retrieval)

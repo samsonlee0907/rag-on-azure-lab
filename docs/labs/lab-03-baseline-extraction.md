@@ -80,3 +80,33 @@ Call out:
 - Blob + skillset enrichment completes
 - the enrichment index recorded in the job ends with `-baseline`
 - full text search returns grounded citations over the selected corpus
+
+## What To Inspect In This Repo
+
+```text
+Profile: baseline_extract
+Built-in skill focus: DocumentExtractionSkill
+Retrieval focus: full_text
+
+Primary files:
+- backend/services/workshop_profiles.py
+- backend/services/search_skillset_enrichment.py
+- backend/services/indexing.py
+- backend/app.py
+```
+
+- [`backend/services/workshop_profiles.py`](../../backend/services/workshop_profiles.py)
+  The `baseline_extract` profile declares the lab title, the target enrichment index names, and the fact that this lab adds only `DocumentExtractionSkill`.
+- [`backend/services/search_skillset_enrichment.py`](../../backend/services/search_skillset_enrichment.py)
+  Inspect `AzureSearchSkillsetEnrichmentService._build_skillset_body()` and `_build_extractor_skill()`. This is where the Blob skillset lane is assembled for the baseline lab.
+- [`backend/services/indexing.py`](../../backend/services/indexing.py)
+  Inspect `AzureSearchKnowledgeBaseAdapter.direct_search()` and `_run_direct_search()`. This is where `full_text` is translated into a direct `docs/search` request over the canonical chunk index.
+- [`backend/app.py`](../../backend/app.py)
+  Inspect `config_summary()`, `workshop_profiles()`, and `chat()`. These show how the UI discovers the active profile and how the chat request selects the `full_text` path.
+
+## Learn References
+
+- [Skillset concepts](https://learn.microsoft.com/en-us/azure/search/cognitive-search-working-with-skillsets)
+- [Document Extraction skill](https://learn.microsoft.com/en-us/azure/search/cognitive-search-skill-document-extraction)
+- [Create a full-text query](https://learn.microsoft.com/en-us/azure/search/search-query-create)
+- [BM25 relevance scoring](https://learn.microsoft.com/en-us/azure/search/index-similarity-and-scoring)

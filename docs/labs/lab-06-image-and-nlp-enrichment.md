@@ -67,3 +67,33 @@ Keep them out of the base workshop until the audience has seen the core visual/N
 - enrichment metadata includes OCR or image-analysis outputs
 - the enrichment index recorded in the job ends with `-visual-nlp`
 - hybrid retrieval shows stronger evidence for diagram- or figure-oriented questions than the previous lab
+
+## What To Inspect In This Repo
+
+```text
+Profile: visual_nlp
+Built-in skill focus:
+- OcrSkill
+- ImageAnalysisSkill
+- LanguageDetectionSkill
+
+Retrieval focus:
+- hybrid
+- optional comparison with agentic retrieval
+```
+
+- [`backend/services/workshop_profiles.py`](../../backend/services/workshop_profiles.py)
+  The `visual_nlp` profile declares the visual and language-oriented enrichment track.
+- [`backend/services/search_skillset_enrichment.py`](../../backend/services/search_skillset_enrichment.py)
+  Inspect `_profile_uses_visual_nlp()`, `_build_ocr_skill()`, `_build_image_analysis_skill()`, and `_build_language_detection_skill()`. This is where the Search-managed skillset adds OCR text, image descriptions, and detected language.
+- [`backend/services/parsers.py`](../../backend/services/parsers.py)
+  Inspect the figure extraction and normalization path. This helps explain the difference between parser-side figure handling and Search-managed OCR or image analysis.
+- [`backend/services/chat.py`](../../backend/services/chat.py)
+  Inspect the evidence hydration path if you want to explain how OCR or image-derived evidence becomes visible in the portal.
+
+## Learn References
+
+- [OCR skill](https://learn.microsoft.com/en-us/azure/search/cognitive-search-skill-ocr)
+- [Image Analysis skill](https://learn.microsoft.com/en-us/azure/search/cognitive-search-skill-image-analysis)
+- [Language Detection skill](https://learn.microsoft.com/en-us/azure/search/cognitive-search-skill-language-detection)
+- [Extract text from images with AI enrichment](https://learn.microsoft.com/en-us/azure/search/cognitive-search-concept-image-scenarios)

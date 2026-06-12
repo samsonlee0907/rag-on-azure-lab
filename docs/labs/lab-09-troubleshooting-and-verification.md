@@ -92,3 +92,35 @@ Together these validate:
 - agentic retrieval
 - citation rendering
 - evidence card rendering
+
+## What To Inspect In This Repo
+
+```text
+Focus for this lab:
+- connect a failed workshop step to the exact code and config involved
+
+Primary files:
+- backend/app.py
+- backend/core/config.py
+- backend/services/search_skillset_enrichment.py
+- backend/services/indexing.py
+- backend/services/pipeline.py
+```
+
+- [`backend/app.py`](../../backend/app.py)
+  Start here when a portal action or API route behaves differently than expected.
+- [`backend/core/config.py`](../../backend/core/config.py)
+  Use this to verify which environment flag controls the behavior you are troubleshooting.
+- [`backend/services/search_skillset_enrichment.py`](../../backend/services/search_skillset_enrichment.py)
+  Use this for Blob data source, skillset, indexer, enrichment cache, and prompt-skill failures.
+- [`backend/services/indexing.py`](../../backend/services/indexing.py)
+  Use this for direct full-text, vector, hybrid, or agentic retrieval failures.
+- [`backend/services/pipeline.py`](../../backend/services/pipeline.py)
+  Use this for stage-by-stage ingestion errors, retries, and artifact handling.
+
+## Learn References
+
+- [Skillset concepts](https://learn.microsoft.com/en-us/azure/search/cognitive-search-working-with-skillsets)
+- [Reset and rerun indexers](https://learn.microsoft.com/en-us/azure/search/search-howto-run-reset-indexers)
+- [Agentic retrieval overview](https://learn.microsoft.com/en-us/azure/search/agentic-retrieval-overview)
+- [Hybrid search overview](https://learn.microsoft.com/en-us/azure/search/hybrid-search-overview)

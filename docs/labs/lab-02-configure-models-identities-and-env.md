@@ -82,3 +82,36 @@ After the app is running, `GET /api/config` should report:
 - model names are resolved
 - strict mode is enabled
 - the four core retrieval modes are available
+
+## What To Inspect In This Repo
+
+```text
+Focus for this lab:
+- understand how environment variables switch features on and off
+- understand which model deployment is used for each stage
+
+Primary files:
+- .env.example
+- backend/core/config.py
+- backend/app.py
+- backend/services/foundry_openai.py
+- backend/services/indexing.py
+```
+
+- [`.env.example`](../../.env.example)
+  Shows the exact environment contract for Search, Blob, Document Intelligence, Foundry, and retrieval mode defaults.
+- [`backend/core/config.py`](../../backend/core/config.py)
+  Converts environment variables into runtime flags such as `azure_search_enabled`, `azure_search_blob_ingestion_enabled`, `azure_search_llm_enabled`, and the active workshop profile.
+- [`backend/app.py`](../../backend/app.py)
+  Exposes `/api/config`, which is the fastest way to prove that the environment has been interpreted correctly.
+- [`backend/services/foundry_openai.py`](../../backend/services/foundry_openai.py)
+  Handles the app-owned model calls for direct-search answer synthesis and optional seam stitching.
+- [`backend/services/indexing.py`](../../backend/services/indexing.py)
+  Shows where `AZURE_SEARCH_LLM_DEPLOYMENT` and `AZURE_OPENAI_EMBEDDING_DEPLOYMENT` become Search-side planning, synthesis, and vector search behavior.
+
+## Learn References
+
+- [Vector search overview](https://learn.microsoft.com/en-us/azure/search/vector-search-overview)
+- [Agentic retrieval overview](https://learn.microsoft.com/en-us/azure/search/agentic-retrieval-overview)
+- [Enable answer synthesis](https://learn.microsoft.com/en-us/azure/search/agentic-retrieval-how-to-answer-synthesis)
+- [Azure OpenAI Embedding skill](https://learn.microsoft.com/en-us/azure/search/cognitive-search-skill-azure-openai-embedding)
