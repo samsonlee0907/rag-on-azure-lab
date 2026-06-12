@@ -6,6 +6,13 @@ Switch from direct search modes to the official Azure AI Search knowledge-base r
 
 This lab does **not** introduce a new ingestion profile. It uses the best corpus produced in Labs 05 or 06 and changes the retrieval method to `Agentic retrieval`.
 
+## Questions This Lab Answers
+
+- What makes retrieval “agentic” instead of just “hybrid plus an LLM”?
+- What are a knowledge source and a knowledge base in practical terms?
+- When should I use `agentic` instead of `hybrid`?
+- What does answer synthesis add beyond extractive retrieval?
+
 Recommended active profile:
 
 - `genai_enrichment` for text-heavy documents
@@ -56,24 +63,70 @@ The point of this lab is not that agentic retrieval always returns more steps. T
 - the activity panel shows retrieval routing and any exposed subqueries
 - the answer remains grounded with citations
 
-## What To Inspect In This Repo
+## Code Walkthrough
 
-```text
-Retrieval mode focus:
-- agentic retrieval through an Azure AI Search knowledge base
+The chat endpoint cleanly separates direct search from agentic retrieval:
 
-Primary files:
-- backend/services/indexing.py
-- backend/app.py
-- backend/services/chat.py
+```python
+# backend/app.py
+elif requested_retrieval_mode in {"full_text", "vector", "hybrid"}:
+    payload = adapter.direct_search(
+        question_text,
+        retrieval_mode=requested_retrieval_mode,
+        doc_ids=selected_doc_ids or None,
+        doc_source_assignments=doc_source_assignments,
+    )
+else:
+    payload = adapter.chat(
+        question_text,
+        doc_ids=selected_doc_ids or None,
+        doc_source_assignments=doc_source_assignments,
+    )
 ```
 
-- [`backend/services/indexing.py`](../../backend/services/indexing.py)
-  Inspect `AzureSearchKnowledgeBaseAdapter.chat()`, `_route_knowledge_sources()`, and `_build_retrieve_payload()`. This is where the repo switches from direct `docs/search` calls to the knowledge-base `retrieve` action, including routing, knowledge-source selection, and answer-synthesis settings.
-- [`backend/app.py`](../../backend/app.py)
-  Inspect `chat()` to see how the UI retrieval selector routes `agentic` requests into the knowledge-base path instead of the direct search path.
-- [`backend/services/chat.py`](../../backend/services/chat.py)
-  Inspect the grounded answer and citation assembly path so the audience can understand how retrieved evidence becomes the final chat answer and debug panel output.
+- `full_text`, `vector`, and `hybrid` all stay on the direct `docs/search` path.
+- `agentic` switches to the knowledge-base `retrieve` action.
+- This is the cleanest place in the repo to explain the difference between search modes and the official agentic feature.
+
+The actual knowledge-base retrieve payload is built here:
+
+```python
+# backend/services/indexing.py
+payload = {
+    "messages": [{"role": "user", "content": [{"type": "text", "text": question}]}],
+    "includeActivity": True,
+    "outputMode": "answerSynthesis" if settings.azure_search_enable_answer_synthesis else "extractiveData",
+    "retrievalReasoningEffort": {"kind": settings.azure_search_llm_reasoning_effort},
+    "knowledgeSourceParams": knowledge_source_params,
+}
+```
+
+- `knowledgeSourceParams` is how the app scopes the retrieve call to the selected corpus or corpora.
+- `includeActivity` is why the portal can show the routing summary and the visible search steps.
+- `retrievalReasoningEffort` is one of the easiest configuration knobs to demonstrate live.
+
+## Configuration Knobs
+
+| Variable | What it controls | Good workshop variation |
+| --- | --- | --- |
+| `AZURE_SEARCH_LLM_DEPLOYMENT` | Model used by the knowledge base for planning and answer synthesis. | Point to your supported planning model. |
+| `AZURE_SEARCH_ENABLE_ANSWER_SYNTHESIS` | Synthesized answer versus raw extractive retrieval. | Toggle on and off to contrast the output styles. |
+| `AZURE_SEARCH_LLM_REASONING_EFFORT` | How much effort the retrieve path spends on planning. | Compare `low` versus `medium`. |
+| `AZURE_SEARCH_EXTRA_SOURCES_JSON` | Additional knowledge sources for cross-index routing. | Use when you want a multi-corpus lab run. |
+| `AZURE_SEARCH_AUTO_BROADCAST_LIMIT` | How aggressively the app fans out across configured knowledge sources. | Raise it if you want broader agentic routing demos. |
+
+## Best-Practice Takeaways
+
+- do not introduce agentic retrieval before participants understand direct search behavior
+- use agentic retrieval for decomposition, source routing, and multi-part questions
+- keep retrieval activity visible so planning stays inspectable
+- compare agentic and hybrid on the same prompt to show what planning actually changes
+
+## Files To Inspect
+
+- [`backend/app.py`](../../backend/app.py) for the retrieval-mode switch.
+- [`backend/services/indexing.py`](../../backend/services/indexing.py) for the knowledge-base request body and routing.
+- [`backend/services/chat.py`](../../backend/services/chat.py) for how citations and retrieval activity are normalized for the UI.
 
 ## Learn References
 

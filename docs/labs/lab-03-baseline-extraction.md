@@ -10,6 +10,13 @@ Establish the simplest Azure AI Search baseline:
 - one profile-specific enrichment index
 - full text retrieval over the canonical chunk index
 
+## Questions This Lab Answers
+
+- What does `DocumentExtractionSkill` actually do to a file?
+- Why is full-text search still important in a RAG workshop?
+- What does a lexical baseline tell me before I add chunking and embeddings?
+- Why can the baseline return broader or noisier evidence?
+
 Set:
 
 ```dotenv
@@ -81,28 +88,75 @@ Call out:
 - the enrichment index recorded in the job ends with `-baseline`
 - full text search returns grounded citations over the selected corpus
 
-## What To Inspect In This Repo
+## Code Walkthrough
 
-```text
-Profile: baseline_extract
-Built-in skill focus: DocumentExtractionSkill
-Retrieval focus: full_text
+The baseline profile deliberately adds only one built-in skill:
 
-Primary files:
-- backend/services/workshop_profiles.py
-- backend/services/search_skillset_enrichment.py
-- backend/services/indexing.py
-- backend/app.py
+```python
+# backend/services/workshop_profiles.py
+WorkshopSkillProfile(
+    id="baseline_extract",
+    added_skills=("DocumentExtractionSkill",),
+    cumulative_skills=("DocumentExtractionSkill",),
+    recommended_retrieval_modes=("full_text",),
+)
 ```
 
-- [`backend/services/workshop_profiles.py`](../../backend/services/workshop_profiles.py)
-  The `baseline_extract` profile declares the lab title, the target enrichment index names, and the fact that this lab adds only `DocumentExtractionSkill`.
-- [`backend/services/search_skillset_enrichment.py`](../../backend/services/search_skillset_enrichment.py)
-  Inspect `AzureSearchSkillsetEnrichmentService._build_skillset_body()` and `_build_extractor_skill()`. This is where the Blob skillset lane is assembled for the baseline lab.
-- [`backend/services/indexing.py`](../../backend/services/indexing.py)
-  Inspect `AzureSearchKnowledgeBaseAdapter.direct_search()` and `_run_direct_search()`. This is where `full_text` is translated into a direct `docs/search` request over the canonical chunk index.
-- [`backend/app.py`](../../backend/app.py)
-  Inspect `config_summary()`, `workshop_profiles()`, and `chat()`. These show how the UI discovers the active profile and how the chat request selects the `full_text` path.
+- This is the control group for the rest of the workshop.
+- The goal is to show what Azure AI Search can do with only extracted text and lexical matching.
+
+This is the actual skill definition the Search skillset uses:
+
+```python
+# backend/services/search_skillset_enrichment.py
+skills = [self._build_extractor_skill(extractor_kind=extractor_kind)]
+
+return {
+    "@odata.type": "#Microsoft.Skills.Util.DocumentExtractionSkill",
+    "name": "#documentExtraction",
+    "configuration": {"imageAction": "generateNormalizedImages"},
+    "inputs": [{"name": "file_data", "source": "/document/file_data"}],
+    "outputs": [{"name": "content", "targetName": "content_markdown"}],
+}
+```
+
+- `DocumentExtractionSkill` turns the Blob file into `content_markdown`.
+- `imageAction=generateNormalizedImages` is important because it prepares image derivatives even before OCR and image analysis are turned on in later labs.
+
+Baseline retrieval is intentionally simple:
+
+```python
+# backend/services/indexing.py
+if retrieval_mode == "full_text":
+    body["search"] = question
+    return body
+```
+
+- This is plain lexical search over the canonical chunk index.
+- It is the right baseline for demonstrating term sensitivity and lexical misses.
+
+## Configuration Knobs
+
+| Variable | What it controls | Good value for this lab |
+| --- | --- | --- |
+| `WORKSHOP_SKILL_PROFILE` | Chooses the active skillset profile. | `baseline_extract` |
+| `AZURE_SEARCH_SKILLSET_PREFERRED_EXTRACTOR` | Chooses the extractor implementation. | `document_extraction` |
+| `AZURE_SEARCH_REQUIRE_BLOB_SKILLSET_SUCCESS` | Stops the workshop on broken skillset runs. | `true` |
+| `DEFAULT_INGESTION_MODE` | Keeps uploads on the Blob + skillset pipeline. | `hybrid_blob_skillset` |
+
+## Best-Practice Takeaways
+
+- establish a lexical baseline before claiming semantic improvement
+- treat extracted text as a starting point, not the final retrieval unit
+- preserve normalized images early so later visual labs have something to build on
+- compare the same prompts across labs so improvements remain measurable
+
+## Files To Inspect
+
+- [`backend/services/workshop_profiles.py`](../../backend/services/workshop_profiles.py) for the baseline profile declaration.
+- [`backend/services/search_skillset_enrichment.py`](../../backend/services/search_skillset_enrichment.py) for the Search skillset body.
+- [`backend/services/indexing.py`](../../backend/services/indexing.py) for the direct full-text request.
+- [`backend/app.py`](../../backend/app.py) for how the portal selects `full_text`.
 
 ## Learn References
 

@@ -9,6 +9,13 @@ Provision the Azure services required by the core workshop:
 - Azure AI Document Intelligence
 - Azure AI Foundry model resource or reused existing Foundry resource
 
+## Questions This Lab Answers
+
+- Which Azure resources are required for this workshop?
+- Why do I need both Azure AI Search and Blob Storage?
+- Why are multiple model deployments used instead of one?
+- Which permissions matter before upload, indexing, and retrieval can work?
+
 ## Step 1 - Sign in to Azure
 
 ```powershell
@@ -81,28 +88,64 @@ Capture these values for `.env`:
 - Document Intelligence exists
 - Foundry resource is available
 
-## What To Inspect In This Repo
+## Code Walkthrough
 
-```text
-Focus for this lab:
-- understand how the repo expects Azure resources to be named
-- understand which services are required by the workshop
+The provisioning script is not just creating random Azure services. It is creating the exact resources this lab code expects to exist.
 
-Primary files:
-- scripts/provision-azure.ps1
-- .env.example
-- backend/core/config.py
-- docs/environment-reference.md
+```powershell
+# scripts/provision-azure.ps1
+[string]$ResourceGroupName = "rg-ai-search-lab"
+[string]$SearchSourceContainerName = "documents"
+[string]$SearchCacheContainerName = "search-enrichment-cache-v2"
+[string]$SearchAssetStoreContainerName = "search-image-assets-v2"
+[string]$PlanningModelName = "gpt-5-mini"
+[string]$NativeChatModelName = "gpt-5.2"
+[string]$EmbeddingModelName = "text-embedding-3-large"
 ```
 
-- [`scripts/provision-azure.ps1`](../../scripts/provision-azure.ps1)
-  Provisions the resource group, Search service, Blob containers, Document Intelligence resource, and Foundry wiring expected by the workshop.
-- [`.env.example`](../../.env.example)
-  Shows which outputs from the provisioning step must be copied into environment variables.
-- [`backend/core/config.py`](../../backend/core/config.py)
-  Defines the runtime settings that decide whether Search, Blob ingestion, Document Intelligence, and the workshop profiles are actually enabled.
-- [`docs/environment-reference.md`](../environment-reference.md)
-  Explains how the environment variables map to the app behavior.
+- `documents` is the Blob container the Search indexer reads from.
+- `search-enrichment-cache-v2` is for Search enrichment caching so re-runs are cheaper and faster.
+- `search-image-assets-v2` is the asset-store container used by the native image-serving path.
+- The three model slots separate planning, native multimodal answer generation, and embeddings.
+
+The runtime later consumes those names directly:
+
+```python
+# backend/services/search_skillset_enrichment.py
+body = {
+    "dataSourceName": data_source_name or settings.azure_search_blob_data_source_name,
+    "targetIndexName": self._target_index_name(active_profile),
+    "skillsetName": self._target_skillset_name(active_profile),
+}
+```
+
+- If the resource names in Azure do not line up with `.env`, the lab fails at the Search indexer or knowledge-base step.
+- This is why the provisioning lab matters: it establishes the naming contract for the rest of the workshop.
+
+## Configuration Knobs
+
+| Parameter or variable | What it controls | When to change it |
+| --- | --- | --- |
+| `ResourceGroupName` | The workshop’s isolated Azure landing zone. | Change per audience or workshop run. |
+| `SearchSku` | Azure AI Search capacity tier. | Increase for larger workshops or heavier indexing. |
+| `SearchSourceContainerName` | Blob container that stores uploaded source documents. | Change if you want a dedicated container per lab. |
+| `SearchCacheContainerName` | Blob container for enrichment cache. | Keep stable across reruns to demonstrate cache behavior. |
+| `SearchAssetStoreContainerName` | Blob container for native image assets. | Required only if you enable the native image-serving path. |
+| `CreateOptionalModelDeployments` | Whether the script also deploys LLMs and embeddings. | Turn on when you want the full workshop stack provisioned in one pass. |
+
+## Best-Practice Takeaways
+
+- isolate workshop infrastructure in a dedicated resource group
+- separate source documents, enrichment cache, and asset storage
+- separate planning, answer, and embedding model roles
+- verify RBAC early so you do not misdiagnose infrastructure issues as app issues
+
+## Files To Inspect
+
+- [`scripts/provision-azure.ps1`](../../scripts/provision-azure.ps1) for the resource contract.
+- [`.env.example`](../../.env.example) for the values that must come back from provisioning.
+- [`backend/core/config.py`](../../backend/core/config.py) for the runtime feature flags.
+- [`docs/environment-reference.md`](../environment-reference.md) for the full variable reference.
 
 ## Learn References
 

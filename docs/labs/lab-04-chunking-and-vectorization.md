@@ -13,6 +13,13 @@ Then compare:
 - vector search
 - hybrid search
 
+## Questions This Lab Answers
+
+- Why does chunking matter so much for RAG quality?
+- What is the difference between a good chunk and a bad chunk?
+- When should `vector` beat `full_text`, and when should `full_text` still win?
+- Why is `hybrid` often the safest direct-search default?
+
 Set:
 
 ```dotenv
@@ -79,29 +86,96 @@ Have the audience record:
 - the enrichment index recorded in the job ends with `-chunk-vector`
 - vector and hybrid search both return grounded results
 
-## What To Inspect In This Repo
+## Code Walkthrough
 
-```text
-Profile: chunk_vector
-Built-in skill focus:
-- DocumentExtractionSkill
-- SplitSkill
-- AzureOpenAIEmbeddingSkill
+This profile adds chunk-aware enrichment and embeddings on top of the baseline extractor:
 
-Retrieval focus:
-- full_text
-- vector
-- hybrid
+```python
+# backend/services/workshop_profiles.py
+WorkshopSkillProfile(
+    id="chunk_vector",
+    added_skills=("SplitSkill", "AzureOpenAIEmbeddingSkill"),
+    cumulative_skills=(
+        "DocumentExtractionSkill",
+        "SplitSkill",
+        "AzureOpenAIEmbeddingSkill",
+    ),
+    recommended_retrieval_modes=("full_text", "vector", "hybrid"),
+)
 ```
 
-- [`backend/services/workshop_profiles.py`](../../backend/services/workshop_profiles.py)
-  The `chunk_vector` profile is where the workshop declares that this lab adds `SplitSkill` and `AzureOpenAIEmbeddingSkill`.
-- [`backend/services/search_skillset_enrichment.py`](../../backend/services/search_skillset_enrichment.py)
-  Inspect `_profile_uses_split()`, `_profile_uses_embedding()`, `_build_split_skill()`, `_build_embedding_skill()`, and `_build_enrichment_index_body()`. Those methods wire chunk-aware indexing and integrated vectorization into the Search-managed enrichment lane.
-- [`backend/services/chunking.py`](../../backend/services/chunking.py)
-  This is the app-owned chunker. Compare it with the Search-managed `SplitSkill` lane so the audience understands the difference between canonical chunks owned by the app and enrichment chunks or vectors owned by Search.
-- [`backend/services/indexing.py`](../../backend/services/indexing.py)
-  Inspect `direct_search()` and `_run_direct_search()`. This is where the code chooses between lexical search, vector queries, and hybrid requests.
+- The document stays the same.
+- The index gets richer because Search now stores chunk-oriented text slices and embeddings.
+
+This is how the Search skillset adds chunking and vectorization:
+
+```python
+# backend/services/search_skillset_enrichment.py
+def _build_split_skill(self) -> dict[str, Any]:
+    return {
+        "@odata.type": "#Microsoft.Skills.Text.SplitSkill",
+        "textSplitMode": "pages",
+        "maximumPageLength": 1500,
+        "pageOverlapLength": 150,
+        "inputs": [{"name": "text", "source": "/document/content_markdown"}],
+    }
+
+def _build_embedding_skill(self, *, text_source: str = "/document/summary_text") -> dict[str, Any]:
+    return {
+        "@odata.type": "#Microsoft.Skills.Text.AzureOpenAIEmbeddingSkill",
+        "deploymentId": settings.azure_openai_embedding_deployment,
+        "dimensions": settings.azure_search_vector_dimensions,
+    }
+```
+
+- `SplitSkill` makes the enrichment lane more retrieval-friendly.
+- `AzureOpenAIEmbeddingSkill` enables semantic similarity search over those enriched fields.
+
+This is the direct-search switch in the app:
+
+```python
+# backend/services/indexing.py
+if retrieval_mode == "full_text":
+    body["search"] = question
+    return body
+
+if retrieval_mode == "vector":
+    body["search"] = "*"
+    body["vectorQueries"] = [{"kind": "vector", "vector": query_vector}]
+    return body
+
+body["search"] = question
+body["vectorQueries"] = [{"kind": "vector", "vector": query_vector}]
+```
+
+- `full_text` is lexical only.
+- `vector` is embedding similarity only.
+- `hybrid` includes both in one request.
+
+## Configuration Knobs
+
+| Variable | What it controls | Good workshop variation |
+| --- | --- | --- |
+| `WORKSHOP_SKILL_PROFILE` | Activates this profile. | `chunk_vector` |
+| `AZURE_OPENAI_EMBEDDING_DEPLOYMENT` | Embedding model used by the Search skill. | Point to `text-embedding-3-large` or your preferred embedding deployment. |
+| `AZURE_SEARCH_ENABLE_INTEGRATED_VECTORIZATION` | Whether Search writes vector fields during enrichment. | Keep `true` for this lab. |
+| `CHUNK_SIZE_TOKENS` | App-owned canonical chunk size. | Lower it to show more granular retrieval. |
+| `CHUNK_OVERLAP_TOKENS` | App-owned chunk overlap. | Increase it to show better continuity at boundaries. |
+| `USE_SEMANTIC_CHUNKING` | App chunker behavior, separate from Search `SplitSkill`. | Toggle only if you want to contrast app chunking with Search chunking. |
+
+## Best-Practice Takeaways
+
+- chunking is a first-class retrieval design choice, not a preprocessing afterthought
+- embeddings are only as useful as the chunk boundaries they represent
+- hybrid search is usually the best direct-search comparison mode because it blends lexical and semantic signals
+- compare Search-managed chunking and app-managed chunking deliberately instead of assuming they solve the same problem
+
+## Files To Inspect
+
+- [`backend/services/workshop_profiles.py`](../../backend/services/workshop_profiles.py) for the lab declaration.
+- [`backend/services/search_skillset_enrichment.py`](../../backend/services/search_skillset_enrichment.py) for `SplitSkill` and `AzureOpenAIEmbeddingSkill`.
+- [`backend/services/chunking.py`](../../backend/services/chunking.py) for the app-owned canonical chunker.
+- [`backend/services/indexing.py`](../../backend/services/indexing.py) for the direct search request bodies.
 
 ## Learn References
 

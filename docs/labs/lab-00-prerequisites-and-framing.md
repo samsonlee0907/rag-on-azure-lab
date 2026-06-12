@@ -8,6 +8,14 @@ Set the audience context before anyone runs the app:
 - why retrieval quality is a system design problem
 - how this workshop separates ingestion improvements from search-mode improvements
 
+## Questions This Lab Answers
+
+- What is Azure AI Search in a RAG architecture?
+- Why is retrieval quality mostly a systems problem, not only an LLM problem?
+- Why does this workshop separate ingestion improvements from retrieval-mode improvements?
+- Why does the workshop keep the same source document across multiple labs?
+- Why is agentic retrieval introduced after the direct search modes?
+
 ## Core Workshop Message
 
 The workshop has two axes of comparison:
@@ -76,31 +84,71 @@ Only then should the workshop move to agentic retrieval as the official Azure AI
 - Azure CLI signed in
 - Python 3.11+
 
-## What To Inspect In This Repo
+## Code Walkthrough
 
-```text
-Focus for this lab:
-- understand the workshop structure before running anything
-- understand the difference between ingestion-side changes and retrieval-side changes
+This is the core workshop contract: keep the same document, change the enrichment profile, and compare retrieval behavior.
 
-Primary files:
-- README.md
-- backend/services/workshop_profiles.py
-- backend/app.py
-- backend/services/pipeline.py
-- backend/services/indexing.py
+```python
+# backend/services/workshop_profiles.py
+return {
+    "comparison_pattern": (
+        "ingest the same document into progressively richer Azure AI Search indexes "
+        "and compare retrieval behavior"
+    ),
+    "retrieval_tracks": [
+        {"id": "full_text", "title": "Full Text Search"},
+        {"id": "vector", "title": "Vector Search"},
+        {"id": "hybrid", "title": "Hybrid Search"},
+        {"id": "agentic", "title": "Agentic Retrieval"},
+    ],
+    "active_profile_id": active_profile.id,
+}
 ```
 
-- [`README.md`](../../README.md)
-  Explains the workshop sequence, retrieval modes, and the same-document comparison strategy.
-- [`backend/services/workshop_profiles.py`](../../backend/services/workshop_profiles.py)
-  Declares the progressive lab profiles and shows which built-in skills each lab adds.
-- [`backend/app.py`](../../backend/app.py)
-  Exposes the workshop profile summary through `/api/workshop/profiles` and the retrieval options through `/api/config`.
-- [`backend/services/pipeline.py`](../../backend/services/pipeline.py)
-  Shows the app-managed ingestion contract: parse, normalize, stitch, chunk, enrich, and publish.
-- [`backend/services/indexing.py`](../../backend/services/indexing.py)
-  Shows the four retrieval tracks implemented in the chat path: `full_text`, `vector`, `hybrid`, and `agentic`.
+- The workshop is intentionally comparative.
+- Participants should change one dimension at a time: either the enrichment profile or the retrieval mode.
+- The API surface already exposes this model through `/api/workshop/profiles` and `/api/config`.
+
+This is the ingestion-side sequence the rest of the labs keep reusing:
+
+```python
+# backend/services/pipeline.py
+profile = parser_registry.detect(path)
+intermediate = parser_registry.parse(path, doc_id, profile)
+intermediate = normalize_document(intermediate)
+chunks = self.chunker.chunk(intermediate)
+publish_status = adapter.publish(
+    enriched_chunks,
+    source_name=intermediate.source_name,
+    route_text=" ".join(section_headings),
+)
+```
+
+- Everything before `publish()` is about document preparation.
+- Everything after `publish()` is about how Azure AI Search stores and retrieves the prepared content.
+- This distinction is the backbone of the workshop: ingestion quality first, retrieval quality second.
+
+## Configuration Knobs
+
+| Variable | What it controls | Good workshop default |
+| --- | --- | --- |
+| `WORKSHOP_SKILL_PROFILE` | Which enrichment lab is active. | Start with `baseline_extract`. |
+| `DEFAULT_INGESTION_MODE` | Whether uploads go through the Blob + skillset path. | Keep `hybrid_blob_skillset`. |
+| `WORKSHOP_STRICT_MODE` | Whether broken Azure steps fail fast instead of silently downgrading. | Keep `true` for workshops. |
+
+## Best-Practice Takeaways
+
+- teach RAG as an indexing-and-retrieval system, not only as a chat interface
+- hold the document constant when comparing search behavior
+- establish a baseline before introducing more advanced retrieval methods
+- keep Azure-dependent paths explicit so participants can see what is really happening
+
+## Files To Inspect
+
+- [`README.md`](../../README.md) for the overall lab sequence.
+- [`backend/services/workshop_profiles.py`](../../backend/services/workshop_profiles.py) for the progression model.
+- [`backend/services/pipeline.py`](../../backend/services/pipeline.py) for the ingestion contract.
+- [`backend/services/indexing.py`](../../backend/services/indexing.py) for the retrieval tracks.
 
 ## Learn References
 

@@ -17,8 +17,12 @@ The same document is re-ingested through progressively richer Azure AI Search sk
 ## Quick Navigation
 
 - [Why This Repo Exists](#why-this-repo-exists)
+- [Start Here If You Are New To AI Search](#start-here-if-you-are-new-to-ai-search)
 - [Azure AI Search And Foundry IQ](#azure-ai-search-and-foundry-iq)
+- [Azure AI Search Mental Model](#azure-ai-search-mental-model)
 - [Search Modes In This Workshop](#search-modes-in-this-workshop)
+- [What Happens When You Upload One Document](#what-happens-when-you-upload-one-document)
+- [Choosing A Search Mode](#choosing-a-search-mode)
 - [Workshop Design](#workshop-design)
 - [Progressive Lab Sequence](#progressive-lab-sequence)
 - [Architecture](#architecture)
@@ -28,6 +32,7 @@ The same document is re-ingested through progressively richer Azure AI Search sk
 - [Running The App](#running-the-app)
 - [Execution Pattern](#execution-pattern)
 - [Ingestion To Search Flow](#ingestion-to-search-flow)
+- [RAG Best Practices In This Workshop](#rag-best-practices-in-this-workshop)
 - [Built-In Skills Used In The Workshop](#built-in-skills-used-in-the-workshop)
 - [Recommended Prompts](#recommended-prompts)
 - [Optional Extensions](#optional-extensions)
@@ -52,6 +57,26 @@ It is designed to show that grounded answer quality depends on:
 
 The application keeps deterministic control over parsing, seam stitching, canonical chunk IDs, and chunk publishing. Azure AI Search then adds a Search-managed Blob enrichment lane and multiple retrieval options over the resulting corpus.
 
+## Start Here If You Are New To AI Search
+
+If you are new to RAG, this workshop is easiest to follow with one simple mental model:
+
+- your files are not searched directly
+- your files are first extracted, cleaned, chunked, and indexed
+- retrieval quality depends on how that preparation was done
+- Azure AI Search is the retrieval and enrichment platform used to index and search that prepared content
+
+This repo teaches RAG in two layers:
+
+1. **Ingestion quality**
+   - how extraction, chunking, enrichment, and metadata change what becomes searchable
+2. **Retrieval quality**
+   - how `full_text`, `vector`, `hybrid`, and `agentic` retrieval change what is actually found
+
+If you only remember one thing, remember this:
+
+> RAG quality is usually decided before the LLM answers anything.
+
 ## Azure AI Search And Foundry IQ
 
 ### Azure AI Search
@@ -68,6 +93,25 @@ Azure AI Search is the programmable indexing and retrieval layer used directly i
 
 Foundry IQ is the managed knowledge experience built on the same retrieval model. This repo uses Azure AI Search APIs directly so the audience can see the retrieval objects and compare ingestion and retrieval behavior in detail, while still using Foundry-hosted model deployments for answer synthesis and embeddings.
 
+## Azure AI Search Mental Model
+
+These are the core Azure AI Search objects you need to understand for the workshop:
+
+| Object | Plain-language meaning | How this repo uses it |
+| --- | --- | --- |
+| Blob container | Where the original source documents live | The Search indexer reads uploaded documents from `documents` |
+| Data source | The Search connection to Blob | Points the indexer at the workshop Blob container |
+| Skillset | The enrichment pipeline Azure AI Search runs during indexing | Changes by lab through `WORKSHOP_SKILL_PROFILE` |
+| Indexer | The job that reads from the data source, runs the skillset, and writes to an index | Runs the Blob + skillset lane |
+| Index | The searchable store | The workshop uses a canonical chunk index and a profile-specific enrichment index |
+| Knowledge source | A retrieval source used by agentic retrieval | Usually points at a Search index |
+| Knowledge base | The object queried by agentic retrieval | Used in Lab 07 and later |
+
+The workshop is easier to follow if you keep this separation in mind:
+
+- **Indexer side**: data source, skillset, indexer, enrichment index
+- **Query side**: direct search or knowledge-base retrieval
+
 ## Search Modes In This Workshop
 
 The chat UI exposes four retrieval modes.
@@ -83,6 +127,38 @@ The workshop keeps these modes intentionally separate:
 
 - Labs 03 through 06 compare ingestion improvements and direct retrieval behavior.
 - Lab 07 switches to agentic retrieval over the same corpus.
+
+## What Happens When You Upload One Document
+
+One upload creates more than one useful artifact:
+
+1. the app parses and chunks the document into a canonical chunk set
+2. the original file is uploaded to Blob so Azure AI Search can enrich it
+3. the Search indexer runs the active skillset profile
+4. the app merges useful Search-generated fields back into the canonical chunk set
+5. the canonical chunk set is published to the retrieval index
+6. the knowledge base is updated so agentic retrieval can query that corpus
+
+In practice, one uploaded document can create these searchable surfaces:
+
+| Surface | Purpose |
+| --- | --- |
+| Canonical chunk index | The main retrieval surface for full-text, vector, and hybrid search |
+| Enrichment index | The Search-managed view of summaries, OCR outputs, descriptions, and other enrichment outputs |
+| Knowledge base | The agentic retrieval surface that plans and grounds answers over one or more knowledge sources |
+
+## Choosing A Search Mode
+
+Use these rules of thumb during the workshop and in real projects:
+
+| If your question is mostly about... | Start with | Why |
+| --- | --- | --- |
+| exact terms, product names, quoted phrases | `full_text` | lexical matching is the clearest baseline |
+| paraphrases, concept similarity, related wording | `vector` | semantic similarity can recover near-matches |
+| a mix of exact terms and paraphrases | `hybrid` | combines lexical and semantic evidence |
+| multi-part questions, decomposition, cross-source reasoning | `agentic` | knowledge-base retrieval can plan and ground across sources |
+
+The workshop intentionally teaches `agentic` after the other three modes so participants can see what it adds instead of treating it as magic.
 
 ## Workshop Design
 
@@ -326,6 +402,19 @@ sequenceDiagram
 9. Merge Search-managed enrichment fields back into the canonical chunk set.
 10. Publish canonical chunks to the retrieval index.
 11. Use the chat retrieval selector to compare full text, vector, hybrid, and agentic retrieval over that corpus.
+
+## RAG Best Practices In This Workshop
+
+These are the main best practices the labs are trying to teach:
+
+- do not treat a whole PDF as one retrieval unit
+- preserve structure and page provenance during extraction
+- split large documents for extraction only, then stitch them back into coherent retrieval units
+- keep chunk boundaries semantically coherent instead of arbitrary
+- add enrichment fields as supplements, not replacements, for source text
+- compare lexical, vector, and hybrid retrieval before jumping to agentic retrieval
+- use agentic retrieval when the question benefits from planning, subqueries, or multi-source reasoning
+- keep workshop and production systems honest by failing fast when required Azure steps do not complete
 
 ## Built-In Skills Used In The Workshop
 

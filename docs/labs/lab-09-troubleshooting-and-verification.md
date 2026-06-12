@@ -4,6 +4,13 @@
 
 Give facilitators a short operational checklist for the progressive workshop track.
 
+## Questions This Lab Answers
+
+- If an upload fails, where should I inspect first?
+- How do I tell whether the failure is in parsing, Search enrichment, or retrieval?
+- Which environment variables are most likely to explain unexpected behavior?
+- How do I debug Azure AI Search behavior without guessing?
+
 ## Quick Checks
 
 ### 1. App health
@@ -93,30 +100,73 @@ Together these validate:
 - citation rendering
 - evidence card rendering
 
-## What To Inspect In This Repo
+## Code Walkthrough
 
-```text
-Focus for this lab:
-- connect a failed workshop step to the exact code and config involved
+The pipeline is intentionally strict about the Azure-dependent steps:
 
-Primary files:
-- backend/app.py
-- backend/core/config.py
-- backend/services/search_skillset_enrichment.py
-- backend/services/indexing.py
-- backend/services/pipeline.py
+```python
+# backend/services/pipeline.py
+if (
+    settings.azure_search_require_blob_skillset_success
+    and enrichment_snapshot.status != "completed"
+):
+    raise RuntimeError(
+        "Azure AI Search Blob + skillset enrichment did not complete successfully."
+    )
+
+if (
+    settings.azure_search_require_native_multimodal_success
+    and native_snapshot.status != "completed"
+):
+    raise RuntimeError(
+        "Azure AI Search native Blob multimodal provisioning did not complete successfully."
+    )
 ```
 
-- [`backend/app.py`](../../backend/app.py)
-  Start here when a portal action or API route behaves differently than expected.
-- [`backend/core/config.py`](../../backend/core/config.py)
-  Use this to verify which environment flag controls the behavior you are troubleshooting.
-- [`backend/services/search_skillset_enrichment.py`](../../backend/services/search_skillset_enrichment.py)
-  Use this for Blob data source, skillset, indexer, enrichment cache, and prompt-skill failures.
-- [`backend/services/indexing.py`](../../backend/services/indexing.py)
-  Use this for direct full-text, vector, hybrid, or agentic retrieval failures.
-- [`backend/services/pipeline.py`](../../backend/services/pipeline.py)
-  Use this for stage-by-stage ingestion errors, retries, and artifact handling.
+- This is why workshop failures are visible instead of silently degrading.
+- When an upload fails after the parser phase, this is one of the first places to inspect.
+
+The app also gives you a quick runtime summary of what is enabled:
+
+```python
+# backend/app.py
+return {
+    "azure_search_enabled": settings.azure_search_enabled,
+    "azure_search_enable_answer_synthesis": settings.azure_search_enable_answer_synthesis,
+    "azure_search_enable_integrated_vectorization": settings.azure_search_enable_integrated_vectorization,
+    "workshop_skill_profile": settings.workshop_skill_profile,
+    "available_retrieval_modes": ["full_text", "vector", "hybrid", "agentic"],
+}
+```
+
+- `/api/config` is the fastest way to confirm whether the workshop is actually running the mode you think it is.
+- If the UI looks wrong, start there before debugging the deeper Azure calls.
+
+## Configuration Knobs
+
+| Variable | What it controls | When to inspect it |
+| --- | --- | --- |
+| `WORKSHOP_STRICT_MODE` | Whether failures are surfaced immediately. | First check when a step unexpectedly succeeds or silently degrades. |
+| `AZURE_SEARCH_REQUIRE_BLOB_SKILLSET_SUCCESS` | Whether Blob + skillset enrichment is mandatory. | Check when uploads fail after extraction. |
+| `AZURE_SEARCH_REQUIRE_NATIVE_MULTIMODAL_SUCCESS` | Whether native multimodal provisioning is mandatory. | Check when native paths are enabled. |
+| `REQUEST_TIMEOUT_SECONDS` | App-side request timeout. | Check when chat feels stuck or prematurely fails. |
+| `AZURE_SEARCH_INDEXER_TRANSIENT_RETRY_ATTEMPTS` | Search indexer retry behavior. | Check when indexers intermittently fail. |
+| `AZURE_SEARCH_LLM_REASONING_EFFORT` | Planning effort for agentic retrieval. | Check when agentic responses are too slow or too shallow. |
+
+## Best-Practice Takeaways
+
+- debug from the outside in: config, stage, service call, then implementation details
+- use `/api/config` to verify mode and feature flags before deeper troubleshooting
+- fail-fast workshop settings are useful because they make the true failing Azure step visible
+- keep one known-good document around as a control case while debugging
+
+## Files To Inspect
+
+- [`backend/app.py`](../../backend/app.py) for API routes and `/api/config`.
+- [`backend/core/config.py`](../../backend/core/config.py) for the controlling flags.
+- [`backend/services/search_skillset_enrichment.py`](../../backend/services/search_skillset_enrichment.py) for Blob ingestion, skillset, and indexer failures.
+- [`backend/services/indexing.py`](../../backend/services/indexing.py) for full-text, vector, hybrid, and agentic retrieval issues.
+- [`backend/services/pipeline.py`](../../backend/services/pipeline.py) for stage-by-stage ingestion behavior.
 
 ## Learn References
 

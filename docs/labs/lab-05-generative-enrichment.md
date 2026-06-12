@@ -10,6 +10,13 @@ Add Search-managed generative enrichment to the same document:
 
 Then use `Hybrid` search as the main comparison mode.
 
+## Questions This Lab Answers
+
+- Why add summaries and keyword hints if embeddings already exist?
+- What does Search-managed generative enrichment improve for retrieval?
+- How do I keep generated metadata from replacing or distorting source text?
+- Which kinds of questions benefit most from generated retrieval cues?
+
 Set:
 
 ```dotenv
@@ -69,26 +76,89 @@ Show the audience:
 - the enrichment index recorded in the job ends with `-genai`
 - hybrid search returns stronger evidence than the chunk-only run for broad conceptual questions
 
-## What To Inspect In This Repo
+## Code Walkthrough
 
-```text
-Profile: genai_enrichment
-Built-in skill focus:
-- ChatCompletionSkill
+This profile adds Search-side generative hints on top of chunking and embeddings:
 
-Retrieval focus:
-- hybrid
-- optional comparison with agentic retrieval
+```python
+# backend/services/workshop_profiles.py
+WorkshopSkillProfile(
+    id="genai_enrichment",
+    added_skills=("ChatCompletionSkill",),
+    cumulative_skills=(
+        "DocumentExtractionSkill",
+        "SplitSkill",
+        "AzureOpenAIEmbeddingSkill",
+        "ChatCompletionSkill",
+    ),
+    recommended_retrieval_modes=("hybrid", "agentic"),
+)
 ```
 
-- [`backend/services/workshop_profiles.py`](../../backend/services/workshop_profiles.py)
-  The `genai_enrichment` profile declares that this lab adds `ChatCompletionSkill` on top of chunking and embeddings.
-- [`backend/services/search_skillset_enrichment.py`](../../backend/services/search_skillset_enrichment.py)
-  Inspect `_profile_uses_prompt_enrichment()`, `_build_summary_prompt_skill()`, `_build_keywords_prompt_skill()`, and `_apply_enrichment_to_document()`. These methods are where Search-generated summaries and keyword hints are created and then merged back into the app’s canonical chunk records.
-- [`backend/services/indexing.py`](../../backend/services/indexing.py)
-  Inspect `_ensure_index()` and `_upload_chunks()`. This shows that the app still preserves canonical text and page-grounded chunks while adding generative hints as additional fields, not replacements.
-- [`backend/app.py`](../../backend/app.py)
-  Inspect `/api/documents/{doc_id}` and `/api/chat` so participants can connect the enriched metadata with what appears in the portal and response evidence.
+- This lab is where the Search enrichment lane starts producing abstractions, not just extracted text.
+- The audience should compare this against the previous chunk-only lab using the same document and same question.
+
+The generative prompt skills are defined here:
+
+```python
+# backend/services/search_skillset_enrichment.py
+skills.extend(
+    [
+        self._build_summary_prompt_skill(
+            prompt_skill_kind=prompt_skill_kind,
+            text_source="/document/prompt_seed_text",
+        ),
+        self._build_keywords_prompt_skill(
+            prompt_skill_kind=prompt_skill_kind,
+            text_source="/document/summary_text",
+        ),
+    ]
+)
+```
+
+- The first prompt produces `summary_text`.
+- The second prompt turns that summary into retrieval tags and keyword hints.
+- This keeps prompt costs and prompt size smaller than sending the entire document into every prompt skill.
+
+Those Search-generated fields are then merged into the canonical chunks instead of replacing the original chunk text:
+
+```python
+# backend/services/search_skillset_enrichment.py
+for chunk in chunks:
+    chunk.summary_text = summary_text
+    chunk.image_description_text = image_description_text
+    if keyword_hints:
+        chunk.keyword_hints = sorted(set([*chunk.keyword_hints, *keyword_hints]))
+        chunk.tags = sorted(set([*chunk.tags, *keyword_hints]))
+```
+
+- The lab can now show how summaries and tags help retrieval.
+- The canonical `clean_text` remains the authoritative source text for citations and evidence.
+
+## Configuration Knobs
+
+| Variable | What it controls | Good workshop variation |
+| --- | --- | --- |
+| `WORKSHOP_SKILL_PROFILE` | Activates this profile. | `genai_enrichment` |
+| `AZURE_SEARCH_LLM_DEPLOYMENT` | Model used by the Search prompt skills and knowledge-base planning. | Point to your planning model deployment. |
+| `AZURE_SEARCH_PROMPT_SEED_PAGE_LENGTH` | How much text is sampled before summary generation. | Reduce it to show cheaper but less complete summaries. |
+| `AZURE_SEARCH_PROMPT_SEED_PAGES_TO_TAKE` | How many split pages feed the summary prompt. | Increase it for longer documents with diffuse context. |
+| `AZURE_SEARCH_PROMPT_SEED_PAGE_OVERLAP` | Overlap between prompt seed chunks. | Raise it if summary context feels too discontinuous. |
+| `AZURE_SEARCH_ALLOW_FOUNDRY_ENRICHMENT_SUPPLEMENT` | Allows app-side supplementation when Search enrichment is incomplete. | Keep `false` for a cleaner workshop story. |
+
+## Best-Practice Takeaways
+
+- use generative enrichment to add retrieval cues, not to overwrite canonical content
+- keep prompt inputs bounded so indexing stays reliable on large documents
+- broad conceptual questions usually benefit more from summaries and tags than exact-phrase questions
+- treat generated fields as ranking and interpretation aids, not as source truth
+
+## Files To Inspect
+
+- [`backend/services/workshop_profiles.py`](../../backend/services/workshop_profiles.py) for the profile progression.
+- [`backend/services/search_skillset_enrichment.py`](../../backend/services/search_skillset_enrichment.py) for the prompt skills and enrichment merge.
+- [`backend/services/indexing.py`](../../backend/services/indexing.py) for how enriched fields are uploaded.
+- [`backend/app.py`](../../backend/app.py) for how those fields appear in the portal.
 
 ## Learn References
 

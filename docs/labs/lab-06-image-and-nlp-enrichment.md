@@ -10,6 +10,13 @@ Add visual and language-oriented skills to the same document:
 
 Then compare how `Hybrid` retrieval changes for diagram-heavy or image-heavy questions.
 
+## Questions This Lab Answers
+
+- What is the difference between OCR, image analysis, and parser-side figure extraction?
+- Which skills matter most for diagrams, screenshots, or scanned pages?
+- How does visual evidence become searchable and then answerable?
+- When should I add these skills in production, and when might they add noise or cost?
+
 Set:
 
 ```dotenv
@@ -68,28 +75,85 @@ Keep them out of the base workshop until the audience has seen the core visual/N
 - the enrichment index recorded in the job ends with `-visual-nlp`
 - hybrid retrieval shows stronger evidence for diagram- or figure-oriented questions than the previous lab
 
-## What To Inspect In This Repo
+## Code Walkthrough
 
-```text
-Profile: visual_nlp
-Built-in skill focus:
-- OcrSkill
-- ImageAnalysisSkill
-- LanguageDetectionSkill
+This profile adds the visual and language-oriented Search skills:
 
-Retrieval focus:
-- hybrid
-- optional comparison with agentic retrieval
+```python
+# backend/services/workshop_profiles.py
+WorkshopSkillProfile(
+    id="visual_nlp",
+    added_skills=(
+        "OCRSkill",
+        "ImageAnalysisSkill",
+        "LanguageDetectionSkill",
+    ),
+    recommended_retrieval_modes=("hybrid", "agentic"),
+)
 ```
 
-- [`backend/services/workshop_profiles.py`](../../backend/services/workshop_profiles.py)
-  The `visual_nlp` profile declares the visual and language-oriented enrichment track.
-- [`backend/services/search_skillset_enrichment.py`](../../backend/services/search_skillset_enrichment.py)
-  Inspect `_profile_uses_visual_nlp()`, `_build_ocr_skill()`, `_build_image_analysis_skill()`, and `_build_language_detection_skill()`. This is where the Search-managed skillset adds OCR text, image descriptions, and detected language.
-- [`backend/services/parsers.py`](../../backend/services/parsers.py)
-  Inspect the figure extraction and normalization path. This helps explain the difference between parser-side figure handling and Search-managed OCR or image analysis.
-- [`backend/services/chat.py`](../../backend/services/chat.py)
-  Inspect the evidence hydration path if you want to explain how OCR or image-derived evidence becomes visible in the portal.
+- This is the best lab for documents with diagrams, scanned pages, screenshots, or mixed-language content.
+- The value is easiest to see on the same document used in earlier labs.
+
+These are the actual built-in skills added by the Search skillset:
+
+```python
+# backend/services/search_skillset_enrichment.py
+def _build_ocr_skill(self) -> dict[str, Any]:
+    return {"@odata.type": "#Microsoft.Skills.Vision.OcrSkill", "context": "/document/normalized_images/*"}
+
+def _build_image_analysis_skill(self) -> dict[str, Any]:
+    return {
+        "@odata.type": "#Microsoft.Skills.Vision.ImageAnalysisSkill",
+        "visualFeatures": ["tags", "description"],
+    }
+
+def _build_language_detection_skill(self) -> dict[str, Any]:
+    return {"@odata.type": "#Microsoft.Skills.Text.LanguageDetectionSkill", "context": "/document"}
+```
+
+- `OcrSkill` extracts text from normalized images.
+- `ImageAnalysisSkill` adds image tags and descriptions.
+- `LanguageDetectionSkill` helps explain why certain language-aware enrichments or downstream prompts behave differently.
+
+One useful comparison in this lab is parser-side figure handling versus Search-side visual enrichment:
+
+```python
+# backend/services/pipeline.py
+figure_artifacts = intermediate.metadata.get("figure_artifacts") or []
+scoped_pages = sorted({page for page in chunk.page_numbers if isinstance(page, int) and page > 0})
+if scoped_pages and len(scoped_pages) <= MAX_DIRECT_CHUNK_IMAGE_PAGE_SPAN:
+    ...
+    chunk.image_evidence = related_figures[:4]
+```
+
+- The parser extracts figure artifacts from the source document.
+- The Search skillset separately adds OCR and image-description signals.
+- This lab is about showing that those are complementary, not duplicate, stages.
+
+## Configuration Knobs
+
+| Variable | What it controls | Good workshop variation |
+| --- | --- | --- |
+| `WORKSHOP_SKILL_PROFILE` | Activates this profile. | `visual_nlp` |
+| `ENABLE_IMAGE_UNDERSTANDING` | Parser-side figure understanding. | Keep `true` if you want richer figure metadata. |
+| `MAX_FIGURE_IMAGE_PIXELS` | Guards oversized extracted images. | Lower it if you want to demonstrate safety limits. |
+| `MAX_FIGURE_IMAGE_DIMENSION` | Caps large figure dimensions. | Lower it if image-heavy PDFs are causing trouble. |
+| `AZURE_SEARCH_REQUIRE_BLOB_SKILLSET_SUCCESS` | Makes OCR and image-analysis failures visible. | Keep `true` in workshops. |
+
+## Best-Practice Takeaways
+
+- do not assume text extraction alone is enough for figure-heavy documents
+- OCR, image analysis, and parser-side figure extraction solve different but complementary problems
+- keep image evidence page-scoped and grounded so the UI does not show irrelevant visuals
+- add visual skills when the document type justifies them, not by default for every corpus
+
+## Files To Inspect
+
+- [`backend/services/workshop_profiles.py`](../../backend/services/workshop_profiles.py) for the `visual_nlp` profile.
+- [`backend/services/search_skillset_enrichment.py`](../../backend/services/search_skillset_enrichment.py) for OCR, image analysis, and language detection.
+- [`backend/services/parsers.py`](../../backend/services/parsers.py) for parser-side figure extraction.
+- [`backend/services/chat.py`](../../backend/services/chat.py) for how image evidence is surfaced to the UI.
 
 ## Learn References
 

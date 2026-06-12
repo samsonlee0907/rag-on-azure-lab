@@ -4,6 +4,13 @@
 
 Prepare the exact workshop configuration so the core Azure-native path is the one being exercised.
 
+## Questions This Lab Answers
+
+- Which model does what in this workshop?
+- What is the difference between app-side synthesis and Search-side planning?
+- Which environment variables are mandatory for the first successful run?
+- How do I verify the app is using the configuration I expect?
+
 ## Step 1 - Deploy or confirm the models
 
 The core workshop uses these model roles:
@@ -83,31 +90,64 @@ After the app is running, `GET /api/config` should report:
 - strict mode is enabled
 - the four core retrieval modes are available
 
-## What To Inspect In This Repo
+## Code Walkthrough
 
-```text
-Focus for this lab:
-- understand how environment variables switch features on and off
-- understand which model deployment is used for each stage
+The workshop is largely controlled by environment variables. Participants should see that the lab behavior is not hardcoded in the UI.
 
-Primary files:
-- .env.example
-- backend/core/config.py
-- backend/app.py
-- backend/services/foundry_openai.py
-- backend/services/indexing.py
+```dotenv
+# .env.example
+WORKSHOP_SKILL_PROFILE=baseline_extract
+DEFAULT_INGESTION_MODE=hybrid_blob_skillset
+AZURE_SEARCH_ENABLE_ANSWER_SYNTHESIS=true
+AZURE_SEARCH_ENABLE_INTEGRATED_VECTORIZATION=true
+AZURE_SEARCH_LLM_DEPLOYMENT=
+AZURE_OPENAI_EMBEDDING_DEPLOYMENT=
 ```
 
-- [`.env.example`](../../.env.example)
-  Shows the exact environment contract for Search, Blob, Document Intelligence, Foundry, and retrieval mode defaults.
-- [`backend/core/config.py`](../../backend/core/config.py)
-  Converts environment variables into runtime flags such as `azure_search_enabled`, `azure_search_blob_ingestion_enabled`, `azure_search_llm_enabled`, and the active workshop profile.
-- [`backend/app.py`](../../backend/app.py)
-  Exposes `/api/config`, which is the fastest way to prove that the environment has been interpreted correctly.
-- [`backend/services/foundry_openai.py`](../../backend/services/foundry_openai.py)
-  Handles the app-owned model calls for direct-search answer synthesis and optional seam stitching.
-- [`backend/services/indexing.py`](../../backend/services/indexing.py)
-  Shows where `AZURE_SEARCH_LLM_DEPLOYMENT` and `AZURE_OPENAI_EMBEDDING_DEPLOYMENT` become Search-side planning, synthesis, and vector search behavior.
+- `WORKSHOP_SKILL_PROFILE` decides which skillset profile the Search indexer will build.
+- `AZURE_SEARCH_LLM_DEPLOYMENT` is the planning and answer-synthesis model used by Azure AI Search.
+- `AZURE_OPENAI_EMBEDDING_DEPLOYMENT` is the embedding model used for vector search.
+
+The app exposes the interpreted configuration so the audience can verify it without reading logs:
+
+```python
+# backend/app.py
+return {
+    "azure_agentic_planning_model": settings.azure_search_llm_deployment,
+    "azure_search_enable_answer_synthesis": settings.azure_search_enable_answer_synthesis,
+    "azure_search_enable_integrated_vectorization": settings.azure_search_enable_integrated_vectorization,
+    "azure_search_skillset_preferred_extractor": settings.azure_search_skillset_preferred_extractor,
+    "workshop_skill_profile": settings.workshop_skill_profile,
+}
+```
+
+- `/api/config` is the quickest proof that the environment has been parsed correctly.
+- If a participant changes `.env` and `/api/config` does not reflect the change, the issue is almost always environment loading or restart behavior.
+
+## Configuration Knobs
+
+| Variable | What it controls | Typical workshop use |
+| --- | --- | --- |
+| `AZURE_SEARCH_LLM_DEPLOYMENT` | Search-side model for planning and answer synthesis. | Required for `agentic` retrieval. |
+| `AZURE_OPENAI_EMBEDDING_DEPLOYMENT` | Embedding model for vector and hybrid search. | Required from Lab 04 onward. |
+| `AZURE_SEARCH_ENABLE_ANSWER_SYNTHESIS` | Whether Azure AI Search returns a synthesized answer or extractive data. | Keep `true` for agentic demos. |
+| `AZURE_SEARCH_ENABLE_INTEGRATED_VECTORIZATION` | Whether the Search-managed enrichment lane writes vectors. | Keep `true` from Lab 04 onward. |
+| `AZURE_SEARCH_SKILLSET_PREFERRED_EXTRACTOR` | Switches between `document_extraction` and `content_understanding`. | Leave at `document_extraction` until Lab 08. |
+| `AZURE_SEARCH_REQUIRE_BLOB_SKILLSET_SUCCESS` | Makes broken Search enrichment fail visibly. | Keep `true` in a workshop. |
+
+## Best-Practice Takeaways
+
+- keep the first working configuration minimal and explicit
+- validate runtime interpretation through `/api/config` before debugging deeper
+- treat planning models and embedding models as separate dependencies
+- keep optional modes off until the core workshop path is stable
+
+## Files To Inspect
+
+- [`.env.example`](../../.env.example) for the environment contract.
+- [`backend/core/config.py`](../../backend/core/config.py) for how those variables become runtime settings.
+- [`backend/app.py`](../../backend/app.py) for `/api/config`.
+- [`backend/services/indexing.py`](../../backend/services/indexing.py) for where the LLM and embedding deployments are used.
 
 ## Learn References
 
