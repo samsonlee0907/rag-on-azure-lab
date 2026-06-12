@@ -252,10 +252,9 @@ AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-large
 
 ## Running The App
 
-From the `v2` folder:
+From the repository root:
 
 ```powershell
-cd .\v2
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt

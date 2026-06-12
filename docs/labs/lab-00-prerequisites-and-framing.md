@@ -71,7 +71,7 @@ Only then should the workshop move to agentic retrieval as the official Azure AI
 
 ## What Participants Need
 
-- local clone of `v2`
+- local clone of this repository
 - Azure subscription access
 - Azure CLI signed in
 - Python 3.11+

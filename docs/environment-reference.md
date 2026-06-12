@@ -27,7 +27,7 @@ Recommended core workshop sequence:
 
 ## Ingestion Mode
 
-- `DEFAULT_INGESTION_MODE`: default UI and API ingestion mode. v2 defaults to `hybrid_blob_skillset`.
+- `DEFAULT_INGESTION_MODE`: default UI and API ingestion mode. The workshop defaults to `hybrid_blob_skillset`.
 - `SEARCH_PIPELINE_MODE`: label used for the Search-managed enrichment lane.
 
 Supported values:
@@ -44,7 +44,7 @@ These are UI or API request values, not environment variables:
 - `hybrid`
 - `agentic`
 
-How v2 uses them:
+How the app uses them:
 
 - `full_text`: direct lexical search over the canonical chunk index
 - `vector`: direct embedding similarity search over the canonical chunk index
@@ -124,7 +124,7 @@ The app-managed parser path and the Search-managed Blob skillset lane are separa
 - `AZURE_SEARCH_INDEXER_TRANSIENT_RETRY_ATTEMPTS`
 - `AZURE_SEARCH_INDEXER_TRANSIENT_RETRY_BASE_DELAY_SECONDS`
 
-The v2 flow uploads the original file to Blob, runs Azure AI Search pull-based enrichment, then merges selected enrichment fields back into the canonical app-managed chunk set.
+The workshop flow uploads the original file to Blob, runs Azure AI Search pull-based enrichment, then merges selected enrichment fields back into the canonical app-managed chunk set.
 
 Recommended core workshop defaults:
 
@@ -228,7 +228,7 @@ The artifact store uses these settings for extracted figure images. The Blob ski
 - `AZURE_SEARCH_DEFAULT_RBAC_SCOPE_IDS`
 - `AZURE_SEARCH_BLOB_RBAC_METADATA_FIELD`
 
-If enabled, v2 can stamp default RBAC scopes into uploaded Blob metadata and carry those values into the Search-managed enrichment index and canonical chunks.
+If enabled, the app can stamp default RBAC scopes into uploaded Blob metadata and carry those values into the Search-managed enrichment index and canonical chunks.
 
 ## Figure Artifacts
 

@@ -30,7 +30,6 @@ Verify:
 ### 3. Python tests
 
 ```powershell
-cd .\v2
 python -m unittest discover -s tests
 ```
 

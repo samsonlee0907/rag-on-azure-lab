@@ -39,7 +39,6 @@ AZURE_SEARCH_REQUIRE_BLOB_SKILLSET_SUCCESS=true
 ## Step 2 - Restart the app
 
 ```powershell
-cd .\v2
 python -m uvicorn backend.app:app --host 127.0.0.1 --port 8016
 ```
 

@@ -20,7 +20,7 @@ Make sure the correct subscription is active.
 
 ## Step 2 - Run the provisioning script
 
-From the `v2` folder:
+From the repository root:
 
 ```powershell
 pwsh -ExecutionPolicy Bypass -File .\scripts\provision-azure.ps1 `

@@ -19,7 +19,6 @@ WORKSHOP_SKILL_PROFILE=baseline_extract
 ## Step 1 - Start or restart the app
 
 ```powershell
-cd .\v2
 python -m uvicorn backend.app:app --host 127.0.0.1 --port 8016
 ```
 

@@ -253,7 +253,7 @@ function Ensure-FoundryProject {
         }
         properties = @{
             displayName = $FoundryProjectName
-            description = "Project for v2 large document processing and native multimodal retrieval."
+            description = "Project for the AI Search Lab workshop and native multimodal retrieval."
         }
     } | ConvertTo-Json -Depth 10
 
@@ -655,5 +655,5 @@ $output = [ordered]@{
 }
 
 Write-Host ""
-Write-Host "Provisioning complete. Use these values in v2/.env:" -ForegroundColor Green
+Write-Host "Provisioning complete. Use these values in .env:" -ForegroundColor Green
 $output | ConvertTo-Json -Depth 10
