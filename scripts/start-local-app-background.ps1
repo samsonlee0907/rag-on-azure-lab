@@ -1,5 +1,6 @@
 param(
-    [int]$Port = 8000
+    [int]$Port = 8000,
+    [string]$EnvFile = ""
 )
 
 Set-StrictMode -Version Latest
@@ -40,9 +41,14 @@ while ($true) {
     Start-Sleep -Milliseconds 500
 }
 
+$argumentList = @("-ExecutionPolicy", "Bypass", "-File", $launcher, "-Port", $port)
+if ($EnvFile) {
+    $argumentList += @("-EnvFile", $EnvFile)
+}
+
 $process = Start-Process `
     -FilePath $pwsh `
-    -ArgumentList "-ExecutionPolicy", "Bypass", "-File", $launcher, "-Port", $port `
+    -ArgumentList $argumentList `
     -WorkingDirectory $workspace `
     -WindowStyle Hidden `
     -RedirectStandardOutput $stdout `

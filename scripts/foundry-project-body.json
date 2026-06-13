@@ -4,7 +4,7 @@
     "type": "SystemAssigned"
   },
   "properties": {
-    "displayName": "enterprise-knowledge-project",
-    "description": "Project for enterprise knowledge ingestion and grounded chat."
+    "displayName": "ai-search-lab-project",
+    "description": "Project for the AI Search Lab workshop."
   }
 }

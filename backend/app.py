@@ -29,6 +29,7 @@ from backend.services.sample_documents import (
     create_random_research_corpus,
 )
 from backend.services.workshop_profiles import build_workshop_profile_summary, build_workshop_skill_profiles
+from backend.services.workshop_profiles import get_workshop_skill_profile
 
 configure_logging(settings.log_level)
 
@@ -105,6 +106,16 @@ def _job_corpus_label(job: JobRecord) -> str:
     return f"{job.file_name} · {_job_workshop_profile_title(job)} · {job.doc_id[:8]}"
 
 
+def _available_retrieval_modes() -> list[str]:
+    profile = get_workshop_skill_profile()
+    ordered = list(profile.recommended_retrieval_modes) or ["full_text"]
+    if "agentic" not in ordered:
+        ordered.append("agentic")
+    if settings.azure_search_native_multimodal_enabled and "native_multimodal" not in ordered:
+        ordered.append("native_multimodal")
+    return ordered
+
+
 def _delete_job_artifacts(job: JobRecord) -> None:
     intermediate_payload = None
     if job.intermediate_path and Path(job.intermediate_path).exists():
@@ -154,6 +165,7 @@ def health() -> dict[str, str]:
 
 @app.get("/api/config")
 def config_summary() -> dict[str, object]:
+    available_retrieval_modes = _available_retrieval_modes()
     return {
         "app_name": settings.app_name,
         "default_ingestion_mode": settings.default_ingestion_mode,
@@ -179,8 +191,8 @@ def config_summary() -> dict[str, object]:
         "azure_search_enable_genai_prompt_skill": settings.azure_search_enable_genai_prompt_skill,
         "azure_search_enable_integrated_vectorization": settings.azure_search_enable_integrated_vectorization,
         "azure_search_enable_image_serving": settings.azure_search_enable_image_serving,
-        "available_retrieval_modes": ["full_text", "vector", "hybrid", "agentic"],
-        "default_retrieval_mode": "agentic",
+        "available_retrieval_modes": available_retrieval_modes,
+        "default_retrieval_mode": available_retrieval_modes[0],
         "azure_search_native_content_extraction_mode": settings.azure_search_native_content_extraction_mode,
         "azure_search_native_chat_completion_deployment": settings.azure_search_native_chat_completion_deployment,
         "azure_search_skillset_preferred_extractor": settings.azure_search_skillset_preferred_extractor,
@@ -523,6 +535,15 @@ def chat(request: ChatTurnRequest) -> ChatTurnResponse:
     requested_retrieval_mode = (request.retrieval_mode or "agentic").strip().lower()
     if requested_retrieval_mode == "auto":
         requested_retrieval_mode = "agentic"
+    allowed_modes = set(_available_retrieval_modes())
+    if requested_retrieval_mode not in allowed_modes:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Retrieval mode '{requested_retrieval_mode}' is not enabled for the active workshop profile "
+                f"'{settings.workshop_skill_profile}'. Allowed modes: {', '.join(sorted(allowed_modes))}."
+            ),
+        )
     use_native_multimodal = requested_retrieval_mode == "native_multimodal"
     selected_native_sources = [
         source_name

@@ -24,10 +24,10 @@ param(
     [string]$SearchSourceContainerName = "documents",
 
     [Parameter(Mandatory = $false)]
-    [string]$SearchCacheContainerName = "search-enrichment-cache-v2",
+    [string]$SearchCacheContainerName = "search-enrichment-cache",
 
     [Parameter(Mandatory = $false)]
-    [string]$SearchAssetStoreContainerName = "search-image-assets-v2",
+    [string]$SearchAssetStoreContainerName = "search-image-assets",
 
     [Parameter(Mandatory = $false)]
     [string]$SearchSku = "standard",
@@ -42,7 +42,7 @@ param(
     [string]$FoundryResourceName = "",
 
     [Parameter(Mandatory = $false)]
-    [string]$FoundryProjectName = "enterprise-knowledge-v2-project",
+    [string]$FoundryProjectName = "ai-search-lab-project",
 
     [Parameter(Mandatory = $false)]
     [switch]$CreateFoundryProject,
@@ -51,40 +51,52 @@ param(
     [switch]$CreateOptionalModelDeployments,
 
     [Parameter(Mandatory = $false)]
-    [string]$ChatModelName = "gpt-5.4",
+    [string]$ChatModelName = "gpt-5.4-mini",
 
     [Parameter(Mandatory = $false)]
-    [string]$ChatModelVersion = "",
+    [string]$ChatModelVersion = "2026-03-17",
 
     [Parameter(Mandatory = $false)]
-    [string]$ChatDeploymentName = "gpt-5-4",
+    [string]$ChatDeploymentName = "gpt-5-4-mini-chat",
 
     [Parameter(Mandatory = $false)]
-    [string]$PlanningModelName = "gpt-5-mini",
+    [int]$ChatDeploymentCapacity = 100,
 
     [Parameter(Mandatory = $false)]
-    [string]$PlanningModelVersion = "",
+    [string]$PlanningModelName = "gpt-5.4-mini",
 
     [Parameter(Mandatory = $false)]
-    [string]$PlanningDeploymentName = "gpt-5-mini",
+    [string]$PlanningModelVersion = "2026-03-17",
 
     [Parameter(Mandatory = $false)]
-    [string]$NativeChatModelName = "gpt-5.2",
+    [string]$PlanningDeploymentName = "gpt-5-4-mini-search",
 
     [Parameter(Mandatory = $false)]
-    [string]$NativeChatModelVersion = "",
+    [int]$PlanningDeploymentCapacity = 100,
 
     [Parameter(Mandatory = $false)]
-    [string]$NativeChatDeploymentName = "gpt-5-2",
+    [string]$NativeChatModelName = "gpt-5.4-mini",
+
+    [Parameter(Mandatory = $false)]
+    [string]$NativeChatModelVersion = "2026-03-17",
+
+    [Parameter(Mandatory = $false)]
+    [string]$NativeChatDeploymentName = "gpt-5-4-mini-native",
+
+    [Parameter(Mandatory = $false)]
+    [int]$NativeChatDeploymentCapacity = 100,
 
     [Parameter(Mandatory = $false)]
     [string]$EmbeddingModelName = "text-embedding-3-large",
 
     [Parameter(Mandatory = $false)]
-    [string]$EmbeddingModelVersion = "",
+    [string]$EmbeddingModelVersion = "1",
 
     [Parameter(Mandatory = $false)]
-    [string]$EmbeddingDeploymentName = "text-embedding-3-large"
+    [string]$EmbeddingDeploymentName = "text-embedding-3-large-vector",
+
+    [Parameter(Mandatory = $false)]
+    [int]$EmbeddingDeploymentCapacity = 100
 )
 
 Set-StrictMode -Version Latest
@@ -420,8 +432,8 @@ if ($CreateOptionalModelDeployments) {
             "--model-format", "OpenAI",
             "--model-name", $ChatModelName,
             "--model-version", $ChatModelVersion,
-            "--sku-name", "Standard",
-            "--sku-capacity", "1",
+            "--sku-name", "GlobalStandard",
+            "--sku-capacity", "$ChatDeploymentCapacity",
             "--output", "none"
         ) | Out-Null
     }
@@ -438,8 +450,8 @@ if ($CreateOptionalModelDeployments) {
             "--model-format", "OpenAI",
             "--model-name", $PlanningModelName,
             "--model-version", $PlanningModelVersion,
-            "--sku-name", "Standard",
-            "--sku-capacity", "1",
+            "--sku-name", "GlobalStandard",
+            "--sku-capacity", "$PlanningDeploymentCapacity",
             "--output", "none"
         ) | Out-Null
     }
@@ -457,7 +469,7 @@ if ($CreateOptionalModelDeployments) {
             "--model-name", $EmbeddingModelName,
             "--model-version", $EmbeddingModelVersion,
             "--sku-name", "Standard",
-            "--sku-capacity", "1",
+            "--sku-capacity", "$EmbeddingDeploymentCapacity",
             "--output", "none"
         ) | Out-Null
     }
@@ -475,7 +487,7 @@ if ($CreateOptionalModelDeployments) {
             "--model-name", $NativeChatModelName,
             "--model-version", $NativeChatModelVersion,
             "--sku-name", "GlobalStandard",
-            "--sku-capacity", "1",
+            "--sku-capacity", "$NativeChatDeploymentCapacity",
             "--output", "none"
         ) | Out-Null
     }
@@ -575,7 +587,7 @@ $output = [ordered]@{
         USE_SEMANTIC_CHUNKING = "false"
         ENABLE_LLM_BOUNDARY_STITCHING = "true"
         WORKSHOP_STRICT_MODE = "true"
-        WORKSHOP_SKILL_PROFILE = "genai_enrichment"
+        WORKSHOP_SKILL_PROFILE = "baseline_extract"
         DEFAULT_INGESTION_MODE = "hybrid_blob_skillset"
         SEARCH_PIPELINE_MODE = "hybrid_blob_skillset"
         AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT = $docIntShow.properties.endpoint
@@ -587,32 +599,32 @@ $output = [ordered]@{
         AZURE_SEARCH_ENDPOINT = "https://$SearchServiceName.search.windows.net"
         AZURE_SEARCH_KEY = $searchAdminKeys.primaryKey
         AZURE_SEARCH_QUERY_KEY = $queryKey.key
-        AZURE_SEARCH_INDEX_NAME = "enterprise-knowledge-index-v2"
-        AZURE_SEARCH_KNOWLEDGE_SOURCE_NAME = "enterprise-knowledge-source-v2"
-        AZURE_SEARCH_KNOWLEDGE_BASE_NAME = "enterprise-knowledge-base-v2"
+        AZURE_SEARCH_INDEX_NAME = "ai-search-lab-index"
+        AZURE_SEARCH_KNOWLEDGE_SOURCE_NAME = "ai-search-lab-source"
+        AZURE_SEARCH_KNOWLEDGE_BASE_NAME = "ai-search-lab-kb"
         AZURE_SEARCH_API_VERSION = "2026-05-01-preview"
         AZURE_SEARCH_INDEXER_API_VERSION = "2026-05-01-preview"
         AZURE_SEARCH_EXTRA_SOURCES_JSON = ""
         AZURE_SEARCH_AUTO_BROADCAST_LIMIT = "4"
-        AZURE_SEARCH_SKILLSET_NAME = "enterprise-knowledge-skillset-v2"
-        AZURE_SEARCH_BLOB_DATA_SOURCE_NAME = "enterprise-knowledge-blob-datasource-v2"
-        AZURE_SEARCH_BLOB_INDEXER_NAME = "enterprise-knowledge-blob-indexer-v2"
-        AZURE_SEARCH_ENRICHMENT_INDEX_NAME = "enterprise-knowledge-enrichment-index-v2"
-        AZURE_SEARCH_ENRICHMENT_KNOWLEDGE_SOURCE_NAME = "enterprise-knowledge-enrichment-source-v2"
+        AZURE_SEARCH_SKILLSET_NAME = "ai-search-lab-skillset"
+        AZURE_SEARCH_BLOB_DATA_SOURCE_NAME = "ai-search-lab-blob-datasource"
+        AZURE_SEARCH_BLOB_INDEXER_NAME = "ai-search-lab-blob-indexer"
+        AZURE_SEARCH_ENRICHMENT_INDEX_NAME = "ai-search-lab-enrichment-index"
+        AZURE_SEARCH_ENRICHMENT_KNOWLEDGE_SOURCE_NAME = "ai-search-lab-enrichment-source"
         AZURE_SEARCH_INCLUDE_ENRICHMENT_SOURCE_IN_CHAT = "true"
-        AZURE_SEARCH_ENABLE_NATIVE_MULTIMODAL_RETRIEVAL = "true"
+        AZURE_SEARCH_ENABLE_NATIVE_MULTIMODAL_RETRIEVAL = "false"
         AZURE_SEARCH_REQUIRE_BLOB_SKILLSET_SUCCESS = "true"
-        AZURE_SEARCH_REQUIRE_NATIVE_MULTIMODAL_SUCCESS = "true"
+        AZURE_SEARCH_REQUIRE_NATIVE_MULTIMODAL_SUCCESS = "false"
         AZURE_SEARCH_NATIVE_API_VERSION = "2026-05-01-preview"
-        AZURE_SEARCH_NATIVE_KNOWLEDGE_BASE_NAME = "enterprise-knowledge-native-kb-v2"
-        AZURE_SEARCH_NATIVE_KNOWLEDGE_SOURCE_PREFIX = "enterprise-native-blob-source-v2-"
+        AZURE_SEARCH_NATIVE_KNOWLEDGE_BASE_NAME = "ai-search-lab-native-kb"
+        AZURE_SEARCH_NATIVE_KNOWLEDGE_SOURCE_PREFIX = "ai-search-lab-native-source-"
         AZURE_SEARCH_NATIVE_AUTO_QUERY_TERMS = "diagram,figure,image,visual,blueprint,chart,schematic,drawing,show me,look at"
         AZURE_SEARCH_NATIVE_CONTENT_EXTRACTION_MODE = "standard"
         AZURE_SEARCH_NATIVE_CHAT_COMPLETION_DEPLOYMENT = $NativeChatDeploymentName
         AZURE_SEARCH_NATIVE_CHAT_COMPLETION_MODEL_NAME = $NativeChatModelName
         AZURE_SEARCH_BLOB_CONNECTION_STRING = $managedIdentityStorageConnectionString
         AZURE_SEARCH_BLOB_SOURCE_CONTAINER = $SearchSourceContainerName
-        AZURE_SEARCH_BLOB_SOURCE_PREFIX = "v2"
+        AZURE_SEARCH_BLOB_SOURCE_PREFIX = "workshop"
         AZURE_SEARCH_SKILLSET_PREFERRED_EXTRACTOR = "document_extraction"
         AZURE_SEARCH_ENABLE_ANSWER_SYNTHESIS = "true"
         AZURE_SEARCH_ANSWER_INSTRUCTIONS = "Use concise bullets, preserve citations, separate evidence by source when multiple corpora contribute, and answer directly from retrieved text or image evidence without asking the user to re-upload or reconfirm images that were already retrieved."
@@ -627,10 +639,11 @@ $output = [ordered]@{
         AZURE_SEARCH_ENABLE_BLOB_RBAC = "false"
         AZURE_SEARCH_DEFAULT_RBAC_SCOPE_IDS = ""
         AZURE_SEARCH_BLOB_RBAC_METADATA_FIELD = "rbac_scope_ids"
-        AZURE_SEARCH_ENABLE_IMAGE_SERVING = "true"
+        AZURE_SEARCH_ENABLE_IMAGE_SERVING = "false"
         AZURE_SEARCH_ASSET_STORE_CONNECTION_STRING = $managedIdentityStorageConnectionString
         AZURE_SEARCH_ASSET_STORE_CONTAINER = $SearchAssetStoreContainerName
         AZURE_OPENAI_EMBEDDING_DEPLOYMENT = $EmbeddingDeploymentName
+        AZURE_OPENAI_EMBEDDING_MODEL_NAME = $EmbeddingModelName
         AZURE_FOUNDRY_RESOURCE_ENDPOINT = $foundryShow.properties.endpoint
         AZURE_FOUNDRY_API_KEY = $foundryKeys.key1
         AZURE_FOUNDRY_RESOURCE_ID = $foundryShow.id

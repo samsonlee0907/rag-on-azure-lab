@@ -148,7 +148,7 @@ if retrieval_mode == "full_text":
 
 - establish a lexical baseline before claiming semantic improvement
 - treat extracted text as a starting point, not the final retrieval unit
-- preserve normalized images early so later visual labs have something to build on
+- keep parser-side figure work out of the baseline so you can attribute later improvements to the visual lab
 - compare the same prompts across labs so improvements remain measurable
 
 ## Files To Inspect

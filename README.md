@@ -255,8 +255,14 @@ flowchart LR
   Used by the app-owned grounded synthesis path.
 - `AZURE_SEARCH_LLM_DEPLOYMENT`
   Used by Azure AI Search knowledge-base planning and answer synthesis.
+- `AZURE_SEARCH_NATIVE_CHAT_COMPLETION_DEPLOYMENT`
+  Used only in the native multimodal retrieval lab. Keep it separate from `AZURE_SEARCH_LLM_DEPLOYMENT` for workshop reliability.
 - `AZURE_OPENAI_EMBEDDING_DEPLOYMENT`
   Used for canonical chunk vectors and Search-managed integrated vectorization.
+- `AZURE_OPENAI_EMBEDDING_MODEL_NAME`
+  The Azure AI Search vectorizer uses the model family name such as `text-embedding-3-large`, not the deployment alias.
+- `AZURE_STORAGE_ACCOUNT_KEY`
+  Leave this blank for the core workshop run. The repo is designed to use the signed-in Azure identity and RBAC for Blob access.
 
 ## Azure Resources To Deploy
 
@@ -266,7 +272,7 @@ The core workshop needs:
 - one Azure Storage account with these containers:
   - `documents`
   - `document-figure-artifacts`
-  - `search-enrichment-cache-v2`
+  - `search-enrichment-cache`
 - one Azure AI Document Intelligence resource
 - one Azure AI Foundry resource with deployed models
 
@@ -279,6 +285,22 @@ pwsh -ExecutionPolicy Bypass -File .\scripts\provision-azure.ps1 `
   -ResourceGroupName "rg-ai-search-lab" `
   -ExistingFoundryResourceGroup "<foundry-resource-group>" `
   -ExistingFoundryResourceName "<foundry-resource-name>"
+```
+
+If you want the script to create model deployments too, the workshop defaults are already pinned to the tested versions and 100-capacity starting point. This workshop now defaults to the same supported LLM family for each generative role, but keeps separate deployment names so Search planning, native multimodal synthesis, and app-side synthesis do not compete for the same TPM budget.
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File .\scripts\provision-azure.ps1 `
+  -SubscriptionId "<subscription-id>" `
+  -Location "eastus" `
+  -ResourceGroupName "rg-ai-search-lab" `
+  -ExistingFoundryResourceGroup "<foundry-resource-group>" `
+  -ExistingFoundryResourceName "<foundry-resource-name>" `
+  -CreateOptionalModelDeployments `
+  -ChatDeploymentCapacity 100 `
+  -PlanningDeploymentCapacity 100 `
+  -NativeChatDeploymentCapacity 100 `
+  -EmbeddingDeploymentCapacity 100
 ```
 
 ### Required role assignments
@@ -309,20 +331,29 @@ AZURE_SEARCH_SKILLSET_PREFERRED_EXTRACTOR=document_extraction
 ```dotenv
 AZURE_SEARCH_BLOB_CONNECTION_STRING=...
 AZURE_SEARCH_BLOB_SOURCE_CONTAINER=documents
-AZURE_SEARCH_BLOB_SOURCE_PREFIX=v2
+AZURE_SEARCH_BLOB_SOURCE_PREFIX=workshop
 AZURE_SEARCH_ENRICHMENT_CACHE_CONNECTION_STRING=...
-AZURE_SEARCH_ENRICHMENT_CACHE_CONTAINER=search-enrichment-cache-v2
+AZURE_SEARCH_ENRICHMENT_CACHE_CONTAINER=search-enrichment-cache
 ```
 
 5. Configure model settings:
 
 ```dotenv
 AZURE_FOUNDRY_RESOURCE_ENDPOINT=...
-AZURE_FOUNDRY_CHAT_DEPLOYMENT=gpt-5-4
-AZURE_SEARCH_LLM_DEPLOYMENT=gpt-5-mini
-AZURE_SEARCH_LLM_MODEL_NAME=gpt-5-mini
-AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-large
+AZURE_FOUNDRY_CHAT_DEPLOYMENT=gpt-5-4-mini-chat
+AZURE_SEARCH_LLM_DEPLOYMENT=gpt-5-4-mini-search
+AZURE_SEARCH_LLM_MODEL_NAME=gpt-5.4-mini
+AZURE_SEARCH_NATIVE_CHAT_COMPLETION_DEPLOYMENT=gpt-5-4-mini-native
+AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-large-vector
 ```
+
+For a workshop, keep these as separate deployment names even if they all use `gpt-5.4-mini` underneath:
+
+- `AZURE_FOUNDRY_CHAT_DEPLOYMENT=gpt-5-4-mini-chat`
+- `AZURE_SEARCH_LLM_DEPLOYMENT=gpt-5-4-mini-search`
+- `AZURE_SEARCH_NATIVE_CHAT_COMPLETION_DEPLOYMENT=gpt-5-4-mini-native`
+
+That makes the model roles easier to teach and reduces cross-feature throttling during the live session.
 
 6. Use [Environment Reference](./docs/environment-reference.md) for the full setting list.
 
@@ -349,6 +380,8 @@ Open:
 - [Health Check](http://127.0.0.1:8016/api/health)
 - [Config Summary](http://127.0.0.1:8016/api/config)
 - [Workshop Profiles](http://127.0.0.1:8016/api/workshop/profiles)
+
+`8016` is just an example. Use any free local port for a fresh workshop run.
 
 ## Execution Pattern
 

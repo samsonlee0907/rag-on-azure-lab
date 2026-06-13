@@ -19,32 +19,33 @@ class NativeMultimodalSearchTests(unittest.TestCase):
     @patch("backend.services.native_multimodal_search.settings.azure_search_blob_connection_string", new="UseDevelopmentStorage=true")
     @patch("backend.services.native_multimodal_search.settings.azure_search_asset_store_connection_string", new="")
     @patch("backend.services.native_multimodal_search.settings.azure_search_blob_source_container", new="documents")
-    @patch("backend.services.native_multimodal_search.settings.azure_search_asset_store_container", new="search-image-assets-v2")
+    @patch("backend.services.native_multimodal_search.settings.azure_search_asset_store_container", new="search-image-assets")
     @patch("backend.services.native_multimodal_search.settings.azure_foundry_resource_endpoint", new="https://example.cognitiveservices.azure.com/")
-    @patch("backend.services.native_multimodal_search.settings.azure_search_native_chat_completion_deployment", new="gpt-5-2")
-    @patch("backend.services.native_multimodal_search.settings.azure_search_native_chat_completion_model_name", new="gpt-5.2")
+    @patch("backend.services.native_multimodal_search.settings.azure_search_native_chat_completion_deployment", new="gpt-5-4-mini-native")
+    @patch("backend.services.native_multimodal_search.settings.azure_search_native_chat_completion_model_name", new="gpt-5.4-mini")
     @patch("backend.services.native_multimodal_search.settings.azure_openai_embedding_deployment", new="text-embedding-3-large")
+    @patch("backend.services.native_multimodal_search.settings.azure_openai_embedding_model_name", new="text-embedding-3-large")
     @patch("backend.services.native_multimodal_search.settings.azure_search_native_content_extraction_mode", new="standard")
     def test_build_blob_knowledge_source_body_includes_asset_store(self) -> None:
         service = NativeMultimodalSearchService()
 
         body = service._build_blob_knowledge_source_body(
             knowledge_source_name="native-doc-source",
-            blob_folder_path="v2/doc-123",
+            blob_folder_path="workshop/doc-123",
             source_name="diagram-report.pdf",
         )
 
         self.assertEqual(body["kind"], "azureBlob")
-        self.assertEqual(body["azureBlobParameters"]["folderPath"], "v2/doc-123")
+        self.assertEqual(body["azureBlobParameters"]["folderPath"], "workshop/doc-123")
         self.assertEqual(
             body["azureBlobParameters"]["ingestionParameters"]["assetStore"]["containerName"],
-            "search-image-assets-v2",
+            "search-image-assets",
         )
         self.assertEqual(
             body["azureBlobParameters"]["ingestionParameters"]["chatCompletionModel"]["azureOpenAIParameters"][
                 "deploymentId"
             ],
-            "gpt-5-2",
+            "gpt-5-4-mini-native",
         )
         self.assertEqual(
             body["azureBlobParameters"]["ingestionParameters"]["chatCompletionModel"]["azureOpenAIParameters"][
@@ -59,15 +60,21 @@ class NativeMultimodalSearchTests(unittest.TestCase):
             "https://example.openai.azure.com",
         )
         self.assertEqual(
+            body["azureBlobParameters"]["ingestionParameters"]["embeddingModel"]["azureOpenAIParameters"][
+                "modelName"
+            ],
+            "text-embedding-3-large",
+        )
+        self.assertEqual(
             body["azureBlobParameters"]["ingestionParameters"]["aiServices"]["uri"],
             "https://example.services.ai.azure.com",
         )
 
     @patch("backend.services.native_multimodal_search.settings.azure_search_enable_image_serving", new=True)
-    @patch("backend.services.native_multimodal_search.settings.azure_search_llm_deployment", new="gpt-5-mini")
-    @patch("backend.services.native_multimodal_search.settings.azure_search_llm_model_name", new="gpt-5-mini")
-    @patch("backend.services.native_multimodal_search.settings.azure_search_native_chat_completion_deployment", new="gpt-5-2")
-    @patch("backend.services.native_multimodal_search.settings.azure_search_native_chat_completion_model_name", new="gpt-5.2")
+    @patch("backend.services.native_multimodal_search.settings.azure_search_llm_deployment", new="gpt-5-4-mini-search")
+    @patch("backend.services.native_multimodal_search.settings.azure_search_llm_model_name", new="gpt-5.4-mini")
+    @patch("backend.services.native_multimodal_search.settings.azure_search_native_chat_completion_deployment", new="gpt-5-4-mini-native")
+    @patch("backend.services.native_multimodal_search.settings.azure_search_native_chat_completion_model_name", new="gpt-5.4-mini")
     @patch("backend.services.native_multimodal_search.settings.azure_foundry_resource_endpoint", new="https://example.cognitiveservices.azure.com/")
     @patch("backend.services.native_multimodal_search.settings.azure_search_llm_use_managed_identity", new=False)
     @patch("backend.services.native_multimodal_search.settings.azure_foundry_api_key", new="test-key")
@@ -79,7 +86,7 @@ class NativeMultimodalSearchTests(unittest.TestCase):
         self.assertEqual(body["knowledgeSources"][0]["name"], "native-doc-source")
         self.assertTrue(body["knowledgeSources"][0]["enableImageServing"])
         self.assertEqual(body["outputMode"], "answerSynthesis")
-        self.assertEqual(body["models"][0]["azureOpenAIParameters"]["deploymentId"], "gpt-5-2")
+        self.assertEqual(body["models"][0]["azureOpenAIParameters"]["deploymentId"], "gpt-5-4-mini-native")
         self.assertEqual(body["models"][0]["azureOpenAIParameters"]["resourceUri"], "https://example.openai.azure.com")
 
     @patch("backend.services.native_multimodal_search.settings.azure_search_enable_image_serving", new=True)

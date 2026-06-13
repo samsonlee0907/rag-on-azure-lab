@@ -18,7 +18,11 @@ logger = logging.getLogger(__name__)
 DIRECT_SEARCH_TOP = 8
 DIRECT_VECTOR_K = 8
 EMBEDDING_BATCH_SIZE = 12
+EMBEDDING_RETRY_ATTEMPTS = 4
+EMBEDDING_RETRY_BASE_DELAY_SECONDS = 20
 MAX_VECTOR_TEXT_LENGTH = 6000
+SEARCH_INDEX_BATCH_MAX_ACTIONS = 100
+SEARCH_INDEX_BATCH_MAX_BYTES = 4_000_000
 
 ROUTING_STOPWORDS = {
     "about",
@@ -54,6 +58,285 @@ ROUTING_STOPWORDS = {
     "with",
     "would",
 }
+
+DIRECT_SEARCH_SNIPPET_STOPWORDS = ROUTING_STOPWORDS | {
+    "are",
+    "basic",
+    "can",
+    "components",
+    "groups",
+    "placed",
+    "three",
+    "types",
+}
+
+DIRECT_SEARCH_NAVIGATION_TERMS = {
+    "chapter",
+    "chapters",
+    "contents",
+    "find",
+    "locate",
+    "overview",
+    "page",
+    "pages",
+    "section",
+    "sections",
+    "where",
+}
+
+DIRECT_SEARCH_VISUAL_TERMS = {
+    "architecture",
+    "blueprint",
+    "callout",
+    "chart",
+    "diagram",
+    "figure",
+    "graph",
+    "image",
+    "label",
+    "labels",
+    "layout",
+    "map",
+    "photo",
+    "plan",
+    "visual",
+}
+
+SENTENCE_BOUNDARY_PATTERN = re.compile(r"(?<=[.!?])\s+")
+
+
+def _question_terms(question: str) -> list[str]:
+    terms: list[str] = []
+    seen: set[str] = set()
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9'\-]{2,}", question.lower()):
+        if token in DIRECT_SEARCH_SNIPPET_STOPWORDS or token in seen:
+            continue
+        seen.add(token)
+        terms.append(token)
+    return terms
+
+
+def _combine_filters(*clauses: str) -> str:
+    filtered = [clause.strip() for clause in clauses if clause and clause.strip()]
+    if not filtered:
+        return ""
+    if len(filtered) == 1:
+        return filtered[0]
+    return " and ".join(f"({clause})" for clause in filtered)
+
+
+def _is_navigation_question(question: str) -> bool:
+    lowered = question.lower()
+    return any(term in lowered for term in DIRECT_SEARCH_NAVIGATION_TERMS)
+
+
+def _is_visual_question(question: str) -> bool:
+    lowered = question.lower()
+    return any(term in lowered for term in DIRECT_SEARCH_VISUAL_TERMS)
+
+
+def _extract_best_snippet(text: str, question: str, *, max_length: int = 420) -> str:
+    normalized = " ".join((text or "").split()).strip()
+    if not normalized:
+        return ""
+
+    list_snippet = _extract_numbered_list_snippet(normalized, question, max_length=max_length)
+    if list_snippet:
+        return list_snippet
+    if len(normalized) <= max_length:
+        return normalized
+
+    terms = _question_terms(question)
+    lowered = normalized.lower()
+    best_window = normalized[:max_length]
+    best_score = -1
+    candidate_positions: list[int] = []
+    for term in terms:
+        candidate_positions.extend(match.start() for match in re.finditer(re.escape(term), lowered))
+    if candidate_positions:
+        for position in candidate_positions:
+            start = max(0, position - max_length // 3)
+            end = min(len(normalized), start + max_length)
+            window = normalized[start:end]
+            window_lower = window.lower()
+            score = sum(3 for term in terms if term in window_lower)
+            if re.search(r"(?:^|[\s:;])[1-9]\.\s+[A-Za-z].*?(?:\s+[1-9]\.\s+[A-Za-z])", window):
+                score += 4
+            if score > best_score:
+                best_score = score
+                best_window = window
+
+    sentences = [sentence.strip() for sentence in SENTENCE_BOUNDARY_PATTERN.split(normalized) if sentence.strip()]
+    if not sentences:
+        return normalized[:max_length].strip()
+    best_index = 0
+    best_score = -1
+    for index, sentence in enumerate(sentences):
+        sentence_lower = sentence.lower()
+        score = sum(1 for term in terms if term in sentence_lower)
+        if re.search(r"(?:^|[\s:;])[1-9]\.\s+[A-Za-z].*?(?:\s+[1-9]\.\s+[A-Za-z])", sentence):
+            score += 3
+        if score > best_score:
+            best_score = score
+            best_index = index
+    selected = sentences[best_index]
+    if best_index + 1 < len(sentences) and len(selected) < max_length * 0.8:
+        selected = f"{selected} {sentences[best_index + 1]}".strip()
+    return selected[:max_length].strip()
+
+
+def _extract_numbered_list_snippet(text: str, question: str, *, max_length: int = 420) -> str:
+    if not _is_list_seeking_question(question):
+        return ""
+
+    normalized = " ".join((text or "").split()).strip()
+    if not normalized:
+        return ""
+
+    matches = [
+        {
+            "ordinal": int(match.group(1)),
+            "text": re.sub(r"\s*-\s*see page\s+\d+\b", "", match.group(2), flags=re.IGNORECASE).strip(" .;:-"),
+            "start": match.start(),
+        }
+        for match in re.finditer(r"(?:^|[\s:;])([1-9])\.\s+(.+?)(?=(?:\s+[1-9]\.\s+)|$)", normalized)
+    ]
+    if len(matches) < 2:
+        return ""
+
+    segments: list[list[dict[str, Any]]] = []
+    current_segment: list[dict[str, Any]] = []
+    last_ordinal = 0
+    for item in matches:
+        ordinal = int(item["ordinal"])
+        if current_segment and ordinal <= last_ordinal:
+            if len(current_segment) >= 2:
+                segments.append(current_segment)
+            current_segment = []
+        current_segment.append(item)
+        last_ordinal = ordinal
+    if len(current_segment) >= 2:
+        segments.append(current_segment)
+
+    terms = _question_terms(question)
+    best_candidate = ""
+    best_score = -1
+    for segment in segments:
+        first_start = int(segment[0]["start"])
+        prefix = normalized[max(0, first_start - 240) : first_start].strip()
+        intro = prefix
+        for boundary_pattern in (r"[.?!]\s+", r"\s+-\s+", r"\s+~\s+"):
+            parts = re.split(boundary_pattern, intro)
+            if parts:
+                intro = parts[-1].strip()
+        intro = intro.lstrip(":;,- ").strip()
+        if len(intro) > 180:
+            intro = intro[-180:].lstrip()
+
+        list_text = " ".join(
+            f"{index}. {_summarize_list_item(str(entry['text']))}"
+            for index, entry in enumerate(segment[:5], start=1)
+            if entry.get("text")
+        )
+        candidate = f"{intro} {list_text}".strip() if intro else list_text
+        lowered = candidate.lower()
+        score = sum(2 for term in terms if term in lowered)
+        score += min(8, len(segment) * 2)
+        if intro:
+            score += 1
+        if "..." in lowered or "see page" in lowered:
+            score -= 1
+        if score > best_score:
+            best_candidate = candidate
+            best_score = score
+
+    return best_candidate[:max_length].strip()
+
+
+def _extract_navigation_snippet(text: str, question: str, *, max_length: int = 220) -> str:
+    normalized = " ".join((text or "").split()).strip()
+    if not normalized:
+        return ""
+    terms = _question_terms(question)
+    best_entry = ""
+    best_score = -1
+    for match in re.finditer(
+        r"([A-Za-z][A-Za-z'&/\-]*(?:\s+[A-Za-z][A-Za-z'&/\-]*){0,6})\s+(\d{1,4})(?=\s|$)",
+        normalized,
+    ):
+        title = match.group(1).strip(" .;:-")
+        page = match.group(2)
+        lowered = title.lower()
+        score = sum(2 for term in terms if term in lowered)
+        if score <= 0:
+            continue
+        entry = f"{title} {page}"
+        if score > best_score:
+            best_score = score
+            best_entry = entry
+    return best_entry[:max_length].strip()
+
+
+def _normalize_numbered_list(text: str) -> str:
+    items = _extract_numbered_list_items(text)
+    if not items:
+        return " ".join(text.split()).strip()
+    return " ".join(f"{index}. {item}" for index, item in enumerate(items, start=1))
+
+
+def _extract_numbered_list_items(text: str) -> list[str]:
+    normalized = " ".join((text or "").split()).strip()
+    pattern = re.compile(r"(?:^|[\s:;])([1-9])\.\s+(.+?)(?=(?:\s+[1-9]\.\s+)|$)")
+    items: list[str] = []
+    for match in pattern.finditer(normalized):
+        item_text = re.sub(r"\s*-\s*see page\s+\d+\b", "", match.group(2), flags=re.IGNORECASE)
+        item_text = item_text.strip(" .;:-")
+        if item_text:
+            items.append(item_text)
+    return items
+
+
+def _summarize_list_item(text: str) -> str:
+    normalized = " ".join((text or "").split()).strip(" .;:-")
+    if not normalized:
+        return ""
+    separator_positions = [
+        normalized.find(separator)
+        for separator in (" ~ ", " - ", ": ", "; ", ". ")
+        if separator in normalized
+    ]
+    if separator_positions:
+        split_at = min(position for position in separator_positions if position >= 0)
+        normalized = normalized[:split_at].strip(" .;:-")
+    return normalized[:90].rstrip(" .;:-")
+
+
+def _is_list_seeking_question(question: str) -> bool:
+    lowered = question.lower()
+    asks_for_items = bool(re.search(r"\b(what|which|list|name|identify)\b", lowered))
+    asks_for_categories = bool(re.search(r"\b(group|groups|component|components|type|types|category|categories)\b", lowered))
+    return asks_for_items and asks_for_categories
+
+
+def _snippet_quality(text: str, question: str) -> tuple[int, int]:
+    normalized = " ".join((text or "").split()).strip().lower()
+    terms = _question_terms(question)
+    score = sum(2 for term in terms if term in normalized)
+    list_item_count = len(_extract_numbered_list_items(normalized))
+    if list_item_count:
+        score += min(8, list_item_count * 2)
+    if "basic components" in normalized or "one of three groups" in normalized:
+        score += 3
+    if "..." in normalized:
+        score -= 1
+    return score, len(normalized)
+
+
+def _direct_result_rank(item: dict[str, Any]) -> tuple[float, float]:
+    return (
+        float(item.get("@search.rerankerScore") or 0),
+        float(item.get("@search.score") or 0),
+    )
 
 
 class FoundryIQAdapter:
@@ -322,12 +605,19 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
             for item in values:
                 if not isinstance(item, dict):
                     continue
-                snippet = item.get("clean_text") or ""
+                raw_text = item.get("clean_text") or ""
+                snippet = ""
+                if _is_navigation_question(question) and item.get("content_type") == "table_of_contents":
+                    snippet = _extract_navigation_snippet(raw_text, question)
+                if not snippet:
+                    snippet = _extract_best_snippet(raw_text, question)
                 captions = item.get("@search.captions") or []
                 if isinstance(captions, list) and captions:
                     first_caption = captions[0]
                     if isinstance(first_caption, dict) and isinstance(first_caption.get("text"), str):
-                        snippet = first_caption["text"]
+                        caption_text = first_caption["text"]
+                        if _snippet_quality(caption_text, question) >= _snippet_quality(snippet, question):
+                            snippet = caption_text
                 results.append(
                     {
                         **item,
@@ -338,7 +628,7 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
                     }
                 )
 
-        results.sort(key=lambda item: float(item.get("@search.score") or 0), reverse=True)
+        results.sort(key=_direct_result_rank, reverse=True)
         diagnostics = {
             **routing_diagnostics,
             "mode": f"{normalized_mode}_search",
@@ -446,8 +736,8 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
     def _upload_chunks(self, chunks: list[ChunkRecord], index_name: str | None = None) -> None:
         target_index = index_name or settings.azure_search_index_name
         url = f"{self.endpoint}/indexes/{target_index}/docs/index?api-version=2025-09-01"
-        embeddings_by_chunk_id = self._embed_chunks_for_index(chunks) if self._vector_search_available() else {}
-        actions = []
+        embeddings_by_chunk_id = self._embed_chunks_for_index(chunks) if self._vector_indexing_enabled() else {}
+        actions: list[dict[str, Any]] = []
         for chunk in chunks:
             action = {
                 "@search.action": "mergeOrUpload",
@@ -471,7 +761,30 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
             if chunk.chunk_id in embeddings_by_chunk_id:
                 action[settings.azure_search_vector_field_name] = embeddings_by_chunk_id[chunk.chunk_id]
             actions.append(action)
-        response = requests.post(url, headers=self.headers, data=json.dumps({"value": actions}), timeout=60)
+        batch: list[dict[str, Any]] = []
+        batch_bytes = 0
+        for action in actions:
+            action_payload = json.dumps(action, separators=(",", ":"))
+            action_bytes = len(action_payload.encode("utf-8"))
+            if batch and (
+                len(batch) >= SEARCH_INDEX_BATCH_MAX_ACTIONS
+                or batch_bytes + action_bytes >= SEARCH_INDEX_BATCH_MAX_BYTES
+            ):
+                self._post_chunk_batch(url, batch)
+                batch = []
+                batch_bytes = 0
+            batch.append(action)
+            batch_bytes += action_bytes
+        if batch:
+            self._post_chunk_batch(url, batch)
+
+    def _post_chunk_batch(self, url: str, actions: list[dict[str, Any]]) -> None:
+        response = requests.post(
+            url,
+            headers=self.headers,
+            data=json.dumps({"value": actions}),
+            timeout=60,
+        )
         self._raise_for_status(response)
 
     def _vector_search_available(self) -> bool:
@@ -479,6 +792,14 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
             settings.azure_openai_embedding_deployment
             and settings.azure_foundry_openai_base_url
         )
+
+    def _vector_indexing_enabled(self) -> bool:
+        return self._vector_search_available() and get_workshop_skill_profile().id in {
+            "chunk_vector",
+            "genai_enrichment",
+            "visual_nlp",
+            "content_understanding",
+        }
 
     def _chunk_embedding_text(self, chunk: ChunkRecord) -> str:
         keyword_text = ", ".join(chunk.keyword_hints[:12])
@@ -500,10 +821,34 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
         for start in range(0, len(chunks), EMBEDDING_BATCH_SIZE):
             batch = chunks[start : start + EMBEDDING_BATCH_SIZE]
             inputs = [self._chunk_embedding_text(chunk) for chunk in batch]
-            embeddings, _ = embed_texts_with_foundry(inputs, deployment_id=settings.azure_openai_embedding_deployment)
+            embeddings: list[list[float]] | None = None
+            for attempt in range(1, EMBEDDING_RETRY_ATTEMPTS + 1):
+                try:
+                    embeddings, _ = embed_texts_with_foundry(
+                        inputs,
+                        deployment_id=settings.azure_openai_embedding_deployment,
+                    )
+                    break
+                except Exception as exc:
+                    retry_delay = self._embedding_retry_delay_seconds(exc, attempt)
+                    if retry_delay is None or attempt >= EMBEDDING_RETRY_ATTEMPTS:
+                        raise
+                    sleep(retry_delay)
+            if embeddings is None:
+                raise RuntimeError("Embedding generation failed before any vectors were returned.")
             for chunk, embedding in zip(batch, embeddings):
                 embeddings_by_chunk_id[chunk.chunk_id] = embedding
         return embeddings_by_chunk_id
+
+    def _embedding_retry_delay_seconds(self, exc: Exception, attempt: int) -> int | None:
+        detail = str(exc)
+        retry_after_match = re.search(r"retry after\s+(\d+)\s+seconds", detail, flags=re.IGNORECASE)
+        if retry_after_match:
+            return max(1, int(retry_after_match.group(1)))
+        normalized = detail.lower()
+        if "ratelimitreached" in normalized or "too many requests" in normalized or "429" in normalized:
+            return min(120, EMBEDDING_RETRY_BASE_DELAY_SECONDS * attempt)
+        return None
 
     def _ensure_knowledge_sources(self) -> None:
         for source in self._retrieval_knowledge_sources():
@@ -618,6 +963,7 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
                 "source_uri",
                 "section_path",
                 "page_numbers",
+                "content_type",
                 "clean_text",
                 "summary_text",
                 "keyword_hints",
@@ -644,6 +990,9 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
 
         if retrieval_mode == "full_text":
             body["search"] = question
+            body["queryType"] = "semantic"
+            body["semanticConfiguration"] = "default-semantic-config"
+            body["captions"] = "extractive|highlight-false"
             return body
 
         if retrieval_mode == "vector":
@@ -659,6 +1008,9 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
             return body
 
         body["search"] = question
+        body["queryType"] = "semantic"
+        body["semanticConfiguration"] = "default-semantic-config"
+        body["captions"] = "extractive|highlight-false"
         body["vectorQueries"] = [
             {
                 "kind": "vector",
@@ -669,6 +1021,15 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
         ]
         return body
 
+    def _default_content_filter(self, question: str) -> str:
+        clauses: list[str] = []
+        if not _is_navigation_question(question):
+            clauses.append("content_type ne 'table_of_contents'")
+        if not _is_visual_question(question):
+            clauses.append("content_type ne 'figure_catalog'")
+            clauses.append("content_type ne 'diagram_labels'")
+        return " and ".join(clauses)
+
     def _run_direct_search(
         self,
         *,
@@ -678,7 +1039,10 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
         doc_ids: list[str] | None,
         query_vector: list[float] | None,
     ) -> tuple[dict[str, Any], int]:
-        filter_expression = self._build_doc_filter(doc_ids or [])
+        filter_expression = _combine_filters(
+            self._build_doc_filter(doc_ids or []),
+            self._default_content_filter(question),
+        )
         body = self._build_direct_search_body(
             question=question,
             retrieval_mode=retrieval_mode,

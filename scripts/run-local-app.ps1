@@ -1,12 +1,23 @@
 param(
-    [int]$Port = 8000
+    [int]$Port = 8000,
+    [string]$EnvFile = ""
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $workspace = Split-Path -Parent $PSScriptRoot
-$envFile = Join-Path $workspace ".env"
+$envFilePath = if ($EnvFile) {
+    if ([System.IO.Path]::IsPathRooted($EnvFile)) {
+        $EnvFile
+    }
+    else {
+        Join-Path $workspace $EnvFile
+    }
+}
+else {
+    Join-Path $workspace ".env"
+}
 
 function Resolve-PythonPath {
     $pythonCommand = Get-Command python -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -30,11 +41,11 @@ function Resolve-PythonPath {
 
 $python = Resolve-PythonPath
 
-if (-not (Test-Path $envFile)) {
-    throw ".env not found at $envFile"
+if (-not (Test-Path $envFilePath)) {
+    throw ".env not found at $envFilePath"
 }
 
-Get-Content $envFile | ForEach-Object {
+Get-Content $envFilePath | ForEach-Object {
     $line = $_.Trim()
     if (-not $line -or $line.StartsWith("#")) {
         return

@@ -386,6 +386,8 @@ def build_query_rescue(
         if matched_normalized == normalized:
             continue
         replacement = known_terms[matched_normalized]
+        if not _token_may_need_query_rescue(token, replacement):
+            continue
         replacement_key = (normalized, matched_normalized)
         if replacement_key in seen_replacements:
             continue
@@ -480,6 +482,9 @@ def _normalize_citation(
     )
     chunk_id = item.get("chunk_id") or item.get("chunkId") or item.get("id")
     doc_id = item.get("doc_id")
+    section_path = item.get("section_path") or []
+    if not isinstance(section_path, list):
+        section_path = []
     page_numbers = item.get("page_numbers") or []
     if not isinstance(page_numbers, list):
         page_numbers = []
@@ -501,7 +506,9 @@ def _normalize_citation(
         uri=uri,
         chunk_id=chunk_id,
         doc_id=doc_id,
+        section_path=section_path,
         page_numbers=page_numbers,
+        content_type=item.get("content_type"),
         snippet=snippet,
         image_evidence=image_evidence,
         asset_image_paths=asset_image_paths,
@@ -1004,14 +1011,39 @@ def _supplement_missing_sources(
     return supplemental
 
 
-def _balance_citations(citations: list[ChatCitation], diagnostics: dict[str, Any]) -> list[ChatCitation]:
+def _extract_answer_reference_ids(answer: str) -> list[str]:
+    return re.findall(r"\[ref_id:(\d+)\]", answer or "")
+
+
+def _balance_citations(
+    citations: list[ChatCitation],
+    diagnostics: dict[str, Any],
+    *,
+    preferred_raw_reference_ids: list[str] | None = None,
+) -> list[ChatCitation]:
     positive_sources = list(_positive_sources_from_diagnostics(diagnostics).keys())
     ordered: list[ChatCitation] = []
     used: set[int] = set()
+    preferred_lookup = {
+        raw_reference_id
+        for raw_reference_id in (preferred_raw_reference_ids or [])
+        if raw_reference_id
+    }
+
+    for raw_reference_id in preferred_raw_reference_ids or []:
+        for index, citation in enumerate(citations):
+            if index in used:
+                continue
+            if citation.raw_reference_id == raw_reference_id:
+                ordered.append(citation)
+                used.add(index)
+                break
 
     for source_name in positive_sources:
         for index, citation in enumerate(citations):
             if index in used:
+                continue
+            if citation.raw_reference_id in preferred_lookup:
                 continue
             if citation.knowledge_source == source_name:
                 ordered.append(citation)
@@ -1049,7 +1081,11 @@ def _rewrite_reference_markers(answer: str, citations: list[ChatCitation]) -> st
             return match.group(0)
         return f"[{reference_id}]"
 
-    return re.sub(r"\[ref_id:(\d+)\]", replace, answer)
+    rewritten = re.sub(r"\[ref_id:(\d+)\]", replace, answer)
+    rewritten = re.sub(r"(?:\s*\[ref_id:\d+\])+", "", rewritten)
+    rewritten = re.sub(r"\s{2,}", " ", rewritten)
+    rewritten = re.sub(r"\s+([,.;:])", r"\1", rewritten)
+    return rewritten.strip()
 
 
 def _summarize_evidence(citations: list[ChatCitation], diagnostics: dict[str, Any]) -> dict[str, Any]:
@@ -1066,7 +1102,11 @@ def _summarize_evidence(citations: list[ChatCitation], diagnostics: dict[str, An
     }
 
 
-def _extract_citations(payload: dict[str, Any]) -> list[ChatCitation]:
+def _extract_citations(
+    payload: dict[str, Any],
+    *,
+    preferred_raw_reference_ids: list[str] | None = None,
+) -> list[ChatCitation]:
     diagnostics = _effective_diagnostics(payload)
     citations: list[ChatCitation] = []
     for item in _collect_raw_citation_items(payload):
@@ -1082,13 +1122,21 @@ def _extract_citations(payload: dict[str, Any]) -> list[ChatCitation]:
         citations.extend(_hydrate_citations(supplemental))
         citations = _dedupe_citations(citations)
 
-    citations = _balance_citations(citations, diagnostics)
+    citations = _balance_citations(
+        citations,
+        diagnostics,
+        preferred_raw_reference_ids=preferred_raw_reference_ids,
+    )
     return _assign_reference_ids(citations)
 
 
 def build_chat_response(payload: dict[str, Any]) -> ChatTurnResponse:
-    citations = _extract_citations(payload)
-    answer = _rewrite_reference_markers(_extract_answer_text(payload), citations)
+    raw_answer = _extract_answer_text(payload)
+    citations = _extract_citations(
+        payload,
+        preferred_raw_reference_ids=_extract_answer_reference_ids(raw_answer),
+    )
+    answer = _rewrite_reference_markers(raw_answer, citations)
     diagnostics = _effective_diagnostics(payload)
     diagnostics.update(_summarize_evidence(citations, diagnostics))
     diagnostics.setdefault("mode", "search_raw")
@@ -1123,6 +1171,142 @@ def _format_sources_for_prompt(citations: list[ChatCitation]) -> str:
     return "\n\n".join(blocks)
 
 
+def _direct_search_terms(question: str) -> list[str]:
+    terms: list[str] = []
+    seen: set[str] = set()
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9'\-]{2,}", question.lower()):
+        if token in QUERY_RESCUE_STOPWORDS or token in seen:
+            continue
+        seen.add(token)
+        terms.append(token)
+    return terms
+
+
+def _extract_numbered_items(text: str) -> list[str]:
+    normalized = " ".join((text or "").split())
+    pattern = re.compile(r"(?:^|[\s:;])([1-9])\.\s+([A-Za-z].*?)(?=(?:\s+[1-9]\.\s+[A-Za-z])|$)")
+    items: list[str] = []
+    for match in pattern.finditer(normalized):
+        item_text = re.sub(r"^\d+\.\s+", "", match.group(2).strip())
+        if not item_text:
+            continue
+        item_text = re.sub(r"\s*-\s*see page\s+\d+\b", "", item_text, flags=re.IGNORECASE)
+        items.append(item_text.rstrip(" .;"))
+        if len(items) >= 6:
+            break
+    return items
+
+
+def _citation_question_overlap(citation: ChatCitation, question: str) -> int:
+    text = " ".join(
+        part
+        for part in [
+            citation.title,
+            " ".join(citation.section_path or []),
+            citation.snippet,
+            citation.content_type or "",
+        ]
+        if part
+    ).lower()
+    score = sum(1 for term in _direct_search_terms(question) if term in text)
+    if citation.content_type == "table_of_contents" and _is_navigation_question(question):
+        score += 3
+    return score
+
+
+def _token_may_need_query_rescue(token: str, candidate_display: str) -> bool:
+    if token[:1].isupper():
+        return True
+    return _is_acronym_candidate(candidate_display)
+
+
+def _build_direct_search_answer(question: str, citations: list[ChatCitation]) -> str:
+    ordered = _ordered_direct_search_citations(question, citations)
+    if _is_navigation_question(question):
+        navigation_answer = _build_navigation_answer(question, ordered)
+        if navigation_answer:
+            return navigation_answer
+
+    list_question = bool(re.search(r"\b(what|which|list|name)\b", question.lower())) and bool(
+        re.search(r"\b(group|groups|component|components|type|types|category|categories)\b", question.lower())
+    )
+
+    if list_question:
+        for citation in ordered:
+            items = _extract_numbered_items(citation.snippet)
+            if len(items) >= 2:
+                reference = citation.reference_id or 1
+                lines = ["The retrieved source lists these items:"]
+                for item in items[:5]:
+                    lines.append(f"- {item} [{reference}]")
+                return "\n".join(lines)
+
+    if ordered:
+        lead = ordered[0]
+        reference = lead.reference_id or 1
+        answer = f"{lead.snippet} [{reference}]"
+        supporting: list[str] = []
+        for citation in ordered[1:3]:
+            if citation.snippet == lead.snippet:
+                continue
+            supporting.append(f"{citation.snippet} [{citation.reference_id or reference}]")
+        if supporting:
+            answer += "\n\nSupporting evidence:\n" + "\n".join(f"- {item}" for item in supporting)
+        return answer
+
+    return "No relevant content was found for your query."
+
+
+def _ordered_direct_search_citations(question: str, citations: list[ChatCitation]) -> list[ChatCitation]:
+    return sorted(
+        citations,
+        key=lambda citation: (_citation_question_overlap(citation, question), -len(citation.snippet)),
+        reverse=True,
+    )
+
+
+def _is_navigation_question(question: str) -> bool:
+    lowered = question.lower()
+    return any(term in lowered for term in ("page", "pages", "chapter", "chapters", "section", "sections", "where"))
+
+
+def _build_navigation_answer(question: str, citations: list[ChatCitation]) -> str | None:
+    terms = _direct_search_terms(question)
+    toc_candidates = [citation for citation in citations if citation.content_type == "table_of_contents"]
+    candidates = toc_candidates or citations
+    best: tuple[int, str, int] | None = None
+    for citation in candidates:
+        for title, page in _extract_navigation_entries(citation.snippet):
+            lowered = title.lower()
+            score = sum(2 for term in terms if term in lowered)
+            if score <= 0:
+                continue
+            candidate = (score, title, page)
+            if best is None or candidate > best:
+                best = candidate
+                best_citation = citation
+    if best is None:
+        return None
+    _, title, page = best
+    reference = best_citation.reference_id or 1
+    return f'The contents listing points to "{title}" on page {page} [{reference}].'
+
+
+def _extract_navigation_entries(text: str) -> list[tuple[str, int]]:
+    normalized = " ".join((text or "").split())
+    entries: list[tuple[str, int]] = []
+    pattern = re.compile(
+        r"([A-Za-z][A-Za-z'&/\-]*(?:\s+[A-Za-z][A-Za-z'&/\-]*){0,6})\s+(\d{1,4})(?=\s|$)"
+    )
+    for match in pattern.finditer(normalized):
+        title = match.group(1).strip(" .;:-")
+        page = int(match.group(2))
+        if len(title.split()) < 2:
+            continue
+        entries.append((title, page))
+    return entries
+
+
 def synthesize_grounded_chat(question: str, retrieval_payload: dict[str, Any]) -> ChatTurnResponse:
     retrieval_diagnostics = retrieval_payload.get("diagnostics") or {}
     use_search_answer_synthesis = bool(retrieval_diagnostics.get("force_search_answer_synthesis")) or (
@@ -1150,6 +1334,23 @@ def synthesize_grounded_chat(question: str, retrieval_payload: dict[str, Any]) -
     citations = _extract_citations(retrieval_payload)
     if not citations:
         return build_chat_response(retrieval_payload)
+
+    if retrieval_diagnostics.get("search_method") in {"full_text", "vector", "hybrid"}:
+        ordered_citations = _ordered_direct_search_citations(question, citations)
+        diagnostics = _effective_diagnostics(retrieval_payload)
+        diagnostics.update(_summarize_evidence(ordered_citations, diagnostics))
+        diagnostics.update(
+            {
+                "mode": retrieval_diagnostics.get("mode") or f"{retrieval_diagnostics.get('search_method', 'direct')}_search",
+                "answer_synthesis_enabled": False,
+                "grounding_source_count": len(ordered_citations),
+            }
+        )
+        return ChatTurnResponse(
+            answer=_build_direct_search_answer(question, ordered_citations),
+            citations=ordered_citations,
+            diagnostics=diagnostics,
+        )
 
     if not settings.azure_foundry_chat_enabled:
         response = build_chat_response(retrieval_payload)

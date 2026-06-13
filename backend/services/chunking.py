@@ -8,6 +8,30 @@ from backend.core.config import settings
 from backend.domain.models import ChunkRecord, IntermediateDocument, ParagraphSpan, SectionNode
 
 SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?])\s+")
+TABLE_OF_CONTENTS_HEADING_PATTERN = re.compile(r"^(contents|table of contents)\b", re.IGNORECASE)
+PROSE_HINT_TERMS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "be",
+    "by",
+    "for",
+    "from",
+    "in",
+    "is",
+    "it",
+    "of",
+    "on",
+    "or",
+    "that",
+    "the",
+    "these",
+    "this",
+    "to",
+    "with",
+}
 
 
 def _token_estimate(text: str) -> int:
@@ -33,6 +57,71 @@ def _union_page_numbers(blocks: list["_ChunkBlock"]) -> list[int]:
             if isinstance(page, int) and page > 0:
                 pages.add(page)
     return sorted(pages)
+
+
+def _looks_like_table_of_contents_text(text: str) -> bool:
+    normalized = text.replace("\r", "\n")
+    lines = [line.strip() for line in normalized.splitlines() if line.strip()]
+    if not lines:
+        return False
+    heading_region = " ".join(lines[:6]).lower()
+    if TABLE_OF_CONTENTS_HEADING_PATTERN.search(heading_region):
+        return True
+    toc_like_lines = 0
+    for line in lines[:40]:
+        if len(line) > 120:
+            continue
+        if re.search(r"\b\d{1,4}\b", line) and len(re.findall(r"[A-Za-z][A-Za-z'&/\-]*", line)) >= 2:
+            toc_like_lines += 1
+    if toc_like_lines >= 6:
+        return True
+
+    flattened = " ".join(lines)
+    toc_pairs = re.findall(
+        r"(?:^|\s)([A-Za-z][A-Za-z'&/\-]*(?:\s+[A-Za-z][A-Za-z'&/\-]*){0,5})\s+\d{1,4}(?=\s|$)",
+        flattened,
+    )
+    if len(toc_pairs) >= 8 and flattened.count(".") <= 2:
+        return True
+    return False
+
+
+def _looks_like_diagram_labels_text(text: str) -> bool:
+    normalized = " ".join((text or "").split()).strip()
+    if not normalized:
+        return False
+    if any(punctuation in normalized for punctuation in ".!?"):
+        return False
+
+    tokens = re.findall(r"[A-Za-z0-9%℃/+\-]+", normalized.lower())
+    if len(tokens) < 5 or len(tokens) > 80:
+        return False
+
+    alpha_tokens = [token for token in tokens if any(character.isalpha() for character in token)]
+    if len(alpha_tokens) < 4:
+        return False
+
+    prose_hits = sum(1 for token in alpha_tokens if token in PROSE_HINT_TERMS)
+    numeric_or_symbolic = sum(
+        1
+        for token in tokens
+        if token.isdigit() or any(symbol in token for symbol in ("%","℃","/","+","-"))
+    )
+    prose_ratio = prose_hits / max(1, len(alpha_tokens))
+    symbol_ratio = numeric_or_symbolic / max(1, len(tokens))
+
+    return prose_ratio < 0.2 and symbol_ratio < 0.45
+
+
+def _infer_chunk_content_type(section_path: list[str], text: str) -> str:
+    joined_path = " > ".join(section_path).lower()
+    if "extracted figures" in joined_path:
+        return "figure_catalog"
+    if TABLE_OF_CONTENTS_HEADING_PATTERN.search(joined_path) or _looks_like_table_of_contents_text(text):
+        return "table_of_contents"
+    if _looks_like_diagram_labels_text(text):
+        return "diagram_labels"
+    return "text"
 
 
 @dataclass(slots=True)
@@ -299,6 +388,10 @@ class StructureAwareChunker:
         page_numbers: list[int],
     ) -> ChunkRecord:
         checksum = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        content_type = _infer_chunk_content_type(section_path, text)
+        tags = [document.format, document.complexity, self.policy.name]
+        if content_type != "text":
+            tags.append(content_type)
         return ChunkRecord(
             chunk_id=f"{document.doc_id}-chunk-{counter:04d}",
             doc_id=document.doc_id,
@@ -306,8 +399,9 @@ class StructureAwareChunker:
             source_uri=document.source_uri,
             page_numbers=page_numbers,
             section_path=section_path,
+            content_type=content_type,
             checksum=checksum,
             clean_text=text,
             token_estimate=_token_estimate(text),
-            tags=[document.format, document.complexity, self.policy.name],
+            tags=tags,
         )

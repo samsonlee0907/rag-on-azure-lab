@@ -18,7 +18,7 @@ Use the workshop README and labs as the primary setup path:
 python -m uvicorn backend.app:app --host 127.0.0.1 --port 8016
 ```
 
-5. Open `http://127.0.0.1:8016`.
+5. Open `http://127.0.0.1:8016` or replace `8016` with any free local port you choose.
 
 ## Recommended Azure Resources
 

@@ -158,7 +158,9 @@ class ChatCitation(BaseModel):
     uri: str | None = None
     chunk_id: str | None = None
     doc_id: str | None = None
+    section_path: list[str] = Field(default_factory=list)
     page_numbers: list[int] = Field(default_factory=list)
+    content_type: str | None = None
     snippet: str = ""
     image_evidence: list[dict[str, Any]] = Field(default_factory=list)
     asset_image_paths: list[str] = Field(default_factory=list)

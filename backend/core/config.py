@@ -157,33 +157,36 @@ class Settings:
     )
     azure_search_endpoint: str = os.getenv("AZURE_SEARCH_ENDPOINT", "")
     azure_search_key: str = os.getenv("AZURE_SEARCH_KEY", "")
-    azure_search_index_name: str = os.getenv("AZURE_SEARCH_INDEX_NAME", "enterprise-knowledge-index")
+    azure_search_index_name: str = os.getenv("AZURE_SEARCH_INDEX_NAME", "ai-search-lab-index")
     azure_search_knowledge_source_name: str = os.getenv(
-        "AZURE_SEARCH_KNOWLEDGE_SOURCE_NAME", "enterprise-knowledge-source"
+        "AZURE_SEARCH_KNOWLEDGE_SOURCE_NAME", "ai-search-lab-source"
     )
     azure_search_knowledge_base_name: str = os.getenv(
-        "AZURE_SEARCH_KNOWLEDGE_BASE_NAME", "enterprise-knowledge-base"
+        "AZURE_SEARCH_KNOWLEDGE_BASE_NAME", "ai-search-lab-kb"
     )
     azure_search_api_version: str = os.getenv("AZURE_SEARCH_API_VERSION", "2026-05-01-preview")
     azure_search_indexer_api_version: str = os.getenv("AZURE_SEARCH_INDEXER_API_VERSION", "2026-05-01-preview")
     azure_search_extra_sources: tuple[SearchKnowledgeSourceConfig, ...] = _load_extra_search_sources()
     azure_search_auto_broadcast_limit: int = int(os.getenv("AZURE_SEARCH_AUTO_BROADCAST_LIMIT", "4"))
-    azure_search_skillset_name: str = os.getenv("AZURE_SEARCH_SKILLSET_NAME", "enterprise-knowledge-skillset-v2")
+    azure_search_request_timeout_seconds: int = int(
+        os.getenv("AZURE_SEARCH_REQUEST_TIMEOUT_SECONDS", "180")
+    )
+    azure_search_skillset_name: str = os.getenv("AZURE_SEARCH_SKILLSET_NAME", "ai-search-lab-skillset")
     azure_search_blob_data_source_name: str = os.getenv(
         "AZURE_SEARCH_BLOB_DATA_SOURCE_NAME",
-        "enterprise-knowledge-blob-datasource-v2",
+        "ai-search-lab-blob-datasource",
     )
     azure_search_blob_indexer_name: str = os.getenv(
         "AZURE_SEARCH_BLOB_INDEXER_NAME",
-        "enterprise-knowledge-blob-indexer-v2",
+        "ai-search-lab-blob-indexer",
     )
     azure_search_enrichment_index_name: str = os.getenv(
         "AZURE_SEARCH_ENRICHMENT_INDEX_NAME",
-        "enterprise-knowledge-enrichment-index-v2",
+        "ai-search-lab-enrichment-index",
     )
     azure_search_enrichment_knowledge_source_name: str = os.getenv(
         "AZURE_SEARCH_ENRICHMENT_KNOWLEDGE_SOURCE_NAME",
-        "enterprise-knowledge-enrichment-source-v2",
+        "ai-search-lab-enrichment-source",
     )
     azure_search_include_enrichment_source_in_chat: bool = _env_flag(
         "AZURE_SEARCH_INCLUDE_ENRICHMENT_SOURCE_IN_CHAT",
@@ -207,11 +210,11 @@ class Settings:
     )
     azure_search_native_knowledge_base_name: str = os.getenv(
         "AZURE_SEARCH_NATIVE_KNOWLEDGE_BASE_NAME",
-        "enterprise-knowledge-native-kb-v2",
+        "ai-search-lab-native-kb",
     )
     azure_search_native_knowledge_source_prefix: str = os.getenv(
         "AZURE_SEARCH_NATIVE_KNOWLEDGE_SOURCE_PREFIX",
-        "enterprise-native-blob-source-v2-",
+        "ai-search-lab-native-source-",
     )
     azure_search_native_auto_query_terms: tuple[str, ...] = _split_csv_string(
         os.getenv(
@@ -225,11 +228,11 @@ class Settings:
     ).strip().lower()
     azure_search_native_chat_completion_deployment: str = os.getenv(
         "AZURE_SEARCH_NATIVE_CHAT_COMPLETION_DEPLOYMENT",
-        "gpt-5-2",
+        "gpt-5-4-mini-native",
     )
     azure_search_native_chat_completion_model_name: str = os.getenv(
         "AZURE_SEARCH_NATIVE_CHAT_COMPLETION_MODEL_NAME",
-        "gpt-5.2",
+        "gpt-5.4-mini",
     )
     azure_search_native_retrieve_retry_attempts: int = int(
         os.getenv("AZURE_SEARCH_NATIVE_RETRIEVE_RETRY_ATTEMPTS", "3")
@@ -245,7 +248,7 @@ class Settings:
     )
     azure_search_blob_connection_string: str = os.getenv("AZURE_SEARCH_BLOB_CONNECTION_STRING", "")
     azure_search_blob_source_container: str = os.getenv("AZURE_SEARCH_BLOB_SOURCE_CONTAINER", "documents")
-    azure_search_blob_source_prefix: str = os.getenv("AZURE_SEARCH_BLOB_SOURCE_PREFIX", "v2")
+    azure_search_blob_source_prefix: str = os.getenv("AZURE_SEARCH_BLOB_SOURCE_PREFIX", "workshop")
     azure_search_skillset_preferred_extractor: str = os.getenv(
         "AZURE_SEARCH_SKILLSET_PREFERRED_EXTRACTOR",
         "document_extraction",
@@ -262,7 +265,7 @@ class Settings:
     )
     azure_search_enrichment_cache_container: str = os.getenv(
         "AZURE_SEARCH_ENRICHMENT_CACHE_CONTAINER",
-        "search-enrichment-cache-v2",
+        "search-enrichment-cache",
     )
     azure_search_enable_genai_prompt_skill: bool = _env_flag("AZURE_SEARCH_ENABLE_GENAI_PROMPT_SKILL", True)
     azure_search_enable_integrated_vectorization: bool = _env_flag(
@@ -301,18 +304,22 @@ class Settings:
     )
     azure_search_asset_store_container: str = os.getenv(
         "AZURE_SEARCH_ASSET_STORE_CONTAINER",
-        "search-image-assets-v2",
+        "search-image-assets",
     )
     azure_openai_embedding_deployment: str = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "")
+    azure_openai_embedding_model_name: str = os.getenv(
+        "AZURE_OPENAI_EMBEDDING_MODEL_NAME",
+        "text-embedding-3-large",
+    )
     azure_foundry_resource_endpoint: str = os.getenv("AZURE_FOUNDRY_RESOURCE_ENDPOINT", "")
     azure_foundry_api_key: str = os.getenv("AZURE_FOUNDRY_API_KEY", "")
-    azure_foundry_chat_deployment: str = os.getenv("AZURE_FOUNDRY_CHAT_DEPLOYMENT", "")
+    azure_foundry_chat_deployment: str = os.getenv("AZURE_FOUNDRY_CHAT_DEPLOYMENT", "gpt-5-4-mini-chat")
     azure_foundry_chat_model_name: str = os.getenv("AZURE_FOUNDRY_CHAT_MODEL_NAME", "")
     azure_foundry_project_endpoint: str = os.getenv("AZURE_FOUNDRY_PROJECT_ENDPOINT", "")
     azure_foundry_agent_id: str = os.getenv("AZURE_FOUNDRY_AGENT_ID", "")
     foundry_chat_mode: str = os.getenv("FOUNDRY_CHAT_MODE", "search_knowledge_base")
-    azure_search_llm_deployment: str = os.getenv("AZURE_SEARCH_LLM_DEPLOYMENT", "")
-    azure_search_llm_model_name: str = os.getenv("AZURE_SEARCH_LLM_MODEL_NAME", "")
+    azure_search_llm_deployment: str = os.getenv("AZURE_SEARCH_LLM_DEPLOYMENT", "gpt-5-4-mini-search")
+    azure_search_llm_model_name: str = os.getenv("AZURE_SEARCH_LLM_MODEL_NAME", "gpt-5.4-mini")
     azure_search_llm_reasoning_effort: str = os.getenv("AZURE_SEARCH_LLM_REASONING_EFFORT", "low")
     azure_search_llm_use_managed_identity: bool = _env_flag("AZURE_SEARCH_LLM_USE_MANAGED_IDENTITY", True)
     azure_search_allow_foundry_enrichment_supplement: bool = _env_flag(
@@ -323,7 +330,9 @@ class Settings:
     azure_storage_account: str = os.getenv("AZURE_STORAGE_ACCOUNT", "")
     azure_storage_account_key: str = os.getenv("AZURE_STORAGE_ACCOUNT_KEY", "")
     azure_storage_container: str = os.getenv("AZURE_STORAGE_CONTAINER", "document-figure-artifacts")
+    enable_parser_figure_extraction: bool = _env_flag("ENABLE_PARSER_FIGURE_EXTRACTION", False)
     enable_image_understanding: bool = _env_flag("ENABLE_IMAGE_UNDERSTANDING", True)
+    parser_figure_max_artifacts: int = int(os.getenv("PARSER_FIGURE_MAX_ARTIFACTS", "80"))
     max_figure_image_pixels: int = int(os.getenv("MAX_FIGURE_IMAGE_PIXELS", "40000000"))
     max_figure_image_dimension: int = int(os.getenv("MAX_FIGURE_IMAGE_DIMENSION", "4096"))
     request_timeout_seconds: int = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "60"))
@@ -384,6 +393,20 @@ class Settings:
     @property
     def azure_foundry_chat_enabled(self) -> bool:
         return bool(self.azure_foundry_resource_endpoint and self.azure_foundry_chat_deployment)
+
+    @property
+    def parser_figure_extraction_enabled(self) -> bool:
+        if self.enable_parser_figure_extraction:
+            return True
+        return self.workshop_skill_profile in {"visual_nlp", "content_understanding"}
+
+    @property
+    def parser_image_understanding_enabled(self) -> bool:
+        return bool(
+            self.parser_figure_extraction_enabled
+            and self.enable_image_understanding
+            and self.azure_foundry_chat_enabled
+        )
 
     @property
     def azure_search_llm_enabled(self) -> bool:

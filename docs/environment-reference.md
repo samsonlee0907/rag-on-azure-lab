@@ -90,6 +90,7 @@ The app-managed parser path and the Search-managed Blob skillset lane are separa
 - `AZURE_SEARCH_KNOWLEDGE_BASE_NAME`
 - `AZURE_SEARCH_API_VERSION`
 - `AZURE_SEARCH_INDEXER_API_VERSION`
+- `AZURE_SEARCH_REQUEST_TIMEOUT_SECONDS`
 - `AZURE_SEARCH_EXTRA_SOURCES_JSON`
 - `AZURE_SEARCH_AUTO_BROADCAST_LIMIT`
 
@@ -171,11 +172,18 @@ Notes:
 - `AZURE_SEARCH_LLM_REASONING_EFFORT`
 - `AZURE_SEARCH_LLM_USE_MANAGED_IDENTITY`
 - `AZURE_OPENAI_EMBEDDING_DEPLOYMENT`
+- `AZURE_OPENAI_EMBEDDING_MODEL_NAME`
 
 These settings control:
 
 - the LLM attached to the Azure AI Search knowledge base for planning and answer synthesis
 - embeddings used for vector and hybrid search
+
+Recommended workshop pattern:
+
+- use the same supported LLM family for the generative roles when that simplifies the workshop
+- keep separate deployment names for Search planning, native multimodal synthesis, and app-side synthesis
+- keep embeddings on a separate embedding deployment
 
 ## Foundry / App-side Model Path
 
@@ -222,6 +230,8 @@ Recommended core workshop defaults:
 
 The artifact store uses these settings for extracted figure images. The Blob skillset lane can reuse the same storage account or use a separate Blob connection string through `AZURE_SEARCH_BLOB_CONNECTION_STRING`.
 
+For the core workshop path, leave `AZURE_STORAGE_ACCOUNT_KEY` blank and rely on the signed-in Azure identity plus RBAC for Blob access.
+
 ## RBAC Scaffolding
 
 - `AZURE_SEARCH_ENABLE_BLOB_RBAC`
@@ -232,8 +242,10 @@ If enabled, the app can stamp default RBAC scopes into uploaded Blob metadata an
 
 ## Figure Artifacts
 
+- `ENABLE_PARSER_FIGURE_EXTRACTION`
 - `ENABLE_IMAGE_UNDERSTANDING`
+- `PARSER_FIGURE_MAX_ARTIFACTS`
 - `MAX_FIGURE_IMAGE_PIXELS`
 - `MAX_FIGURE_IMAGE_DIMENSION`
 
-Large embedded PDF figures are normalized to PNG artifacts. Oversized images are downscaled before GPT-based image understanding so a single large TIFF doesn't fail the whole ingestion job.
+The workshop keeps parser-side figure extraction off in the earlier labs and enables it in the visual or Content Understanding tracks. Large embedded PDF figures are normalized to PNG artifacts. Oversized images are downscaled before GPT-based image understanding so a single large TIFF doesn't fail the whole ingestion job. `PARSER_FIGURE_MAX_ARTIFACTS` puts a practical ceiling on parser-side figure work for very large PDFs.

@@ -38,13 +38,29 @@ pwsh -ExecutionPolicy Bypass -File .\scripts\provision-azure.ps1 `
   -ExistingFoundryResourceName "<foundry-resource-name>"
 ```
 
+If you also want the script to create the workshop model deployments, use the built-in default versions and capacities:
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File .\scripts\provision-azure.ps1 `
+  -SubscriptionId "<subscription-id>" `
+  -Location "eastus" `
+  -ResourceGroupName "rg-ai-search-lab" `
+  -ExistingFoundryResourceGroup "<foundry-resource-group>" `
+  -ExistingFoundryResourceName "<foundry-resource-name>" `
+  -CreateOptionalModelDeployments `
+  -ChatDeploymentCapacity 100 `
+  -PlanningDeploymentCapacity 100 `
+  -NativeChatDeploymentCapacity 100 `
+  -EmbeddingDeploymentCapacity 100
+```
+
 ## Step 3 - Confirm the Blob containers
 
 The core workshop expects these containers:
 
 - `documents`
 - `document-figure-artifacts`
-- `search-enrichment-cache-v2`
+- `search-enrichment-cache`
 
 Validate them:
 
@@ -96,17 +112,17 @@ The provisioning script is not just creating random Azure services. It is creati
 # scripts/provision-azure.ps1
 [string]$ResourceGroupName = "rg-ai-search-lab"
 [string]$SearchSourceContainerName = "documents"
-[string]$SearchCacheContainerName = "search-enrichment-cache-v2"
-[string]$SearchAssetStoreContainerName = "search-image-assets-v2"
-[string]$PlanningModelName = "gpt-5-mini"
-[string]$NativeChatModelName = "gpt-5.2"
+[string]$SearchCacheContainerName = "search-enrichment-cache"
+[string]$SearchAssetStoreContainerName = "search-image-assets"
+[string]$PlanningModelName = "gpt-5.4-mini"
+[string]$NativeChatModelName = "gpt-5.4-mini"
 [string]$EmbeddingModelName = "text-embedding-3-large"
 ```
 
 - `documents` is the Blob container the Search indexer reads from.
-- `search-enrichment-cache-v2` is for Search enrichment caching so re-runs are cheaper and faster.
-- `search-image-assets-v2` is the asset-store container used by the native image-serving path.
-- The three model slots separate planning, native multimodal answer generation, and embeddings.
+- `search-enrichment-cache` is for Search enrichment caching so re-runs are cheaper and faster.
+- `search-image-assets` is the asset-store container used by the native image-serving path.
+- The workshop now uses the same supported GPT family for all LLM roles, but keeps separate deployment names for Search planning, native multimodal synthesis, and app-side synthesis.
 
 The runtime later consumes those names directly:
 
@@ -131,13 +147,14 @@ body = {
 | `SearchSourceContainerName` | Blob container that stores uploaded source documents. | Change if you want a dedicated container per lab. |
 | `SearchCacheContainerName` | Blob container for enrichment cache. | Keep stable across reruns to demonstrate cache behavior. |
 | `SearchAssetStoreContainerName` | Blob container for native image assets. | Required only if you enable the native image-serving path. |
+| `ChatDeploymentCapacity`, `PlanningDeploymentCapacity`, `NativeChatDeploymentCapacity`, `EmbeddingDeploymentCapacity` | Starting throughput allocation for workshop deployments. | Default to `100` so each deployment starts at roughly 100,000 TPM when your quota supports it. |
 | `CreateOptionalModelDeployments` | Whether the script also deploys LLMs and embeddings. | Turn on when you want the full workshop stack provisioned in one pass. |
 
 ## Best-Practice Takeaways
 
 - isolate workshop infrastructure in a dedicated resource group
 - separate source documents, enrichment cache, and asset storage
-- separate planning, answer, and embedding model roles
+- separate planning, answer, and embedding model roles even when the underlying GPT model family is the same
 - verify RBAC early so you do not misdiagnose infrastructure issues as app issues
 
 ## Files To Inspect

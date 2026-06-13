@@ -26,7 +26,7 @@ class PipelineMessageCleanupTests(unittest.TestCase):
         snapshot = SearchSkillsetEnrichmentSnapshot(
             status="completed",
             message="Blob-backed Search enrichment completed.",
-            blob_upload={"blob_url": "https://storage.example/doc.pdf", "blob_name": "v2/doc-1/report.pdf"},
+            blob_upload={"blob_url": "https://storage.example/doc.pdf", "blob_name": "workshop/doc-1/report.pdf"},
             search_objects={},
             extracted_fields={},
             diagnostics={},

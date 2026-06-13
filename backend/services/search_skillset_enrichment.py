@@ -47,6 +47,9 @@ class AzureSearchSkillsetEnrichmentService:
             "cache_mode": "indexer_cache",
         }
 
+    def _search_timeout(self) -> int:
+        return max(60, settings.azure_search_request_timeout_seconds)
+
     def _request_with_conflict_retry(
         self,
         method: str,
@@ -54,16 +57,17 @@ class AzureSearchSkillsetEnrichmentService:
         *,
         body: dict[str, Any] | None = None,
         max_attempts: int = 4,
-        timeout: int = 60,
+        timeout: int | None = None,
     ) -> requests.Response:
         response: requests.Response | None = None
+        effective_timeout = timeout or self._search_timeout()
         for attempt in range(1, max_attempts + 1):
             response = requests.request(
                 method,
                 url,
                 headers=self.headers,
                 data=json.dumps(body) if body is not None else None,
-                timeout=timeout,
+                timeout=effective_timeout,
             )
             if not self._is_conflicting_update_response(response) or attempt >= max_attempts:
                 return response
@@ -118,19 +122,43 @@ class AzureSearchSkillsetEnrichmentService:
         }
 
         try:
+            logger.info(
+                "ensuring search enrichment index",
+                extra={"context": {"doc_id": doc_id, "index_name": self._target_index_name(profile)}},
+            )
             self._ensure_enrichment_index(profile=profile)
+            logger.info(
+                "ensuring search enrichment data source",
+                extra={"context": {"doc_id": doc_id, "data_source_name": data_source_name}},
+            )
             self._ensure_data_source(
                 data_source_name=data_source_name,
                 body=request_bodies["data_source"],
             )
+            logger.info(
+                "ensuring search enrichment skillset",
+                extra={"context": {"doc_id": doc_id, "skillset_name": self._target_skillset_name(profile)}},
+            )
             self._ensure_skillset(profile=profile)
+            logger.info(
+                "ensuring search enrichment indexer",
+                extra={"context": {"doc_id": doc_id, "indexer_name": indexer_name}},
+            )
             self._ensure_indexer(
                 indexer_name=indexer_name,
                 body=request_bodies["indexer"],
                 profile=profile,
             )
+            logger.info(
+                "running search enrichment indexer",
+                extra={"context": {"doc_id": doc_id, "indexer_name": indexer_name}},
+            )
             indexer_status, indexer_retry_history = self._run_indexer_with_retry(indexer_name=indexer_name)
             self._raise_if_indexer_failed(indexer_status)
+            logger.info(
+                "fetching search enrichment document",
+                extra={"context": {"doc_id": doc_id, "index_name": self._target_index_name(profile)}},
+            )
             extracted_fields = self._fetch_document_enrichment(
                 doc_id,
                 blob_upload.get("blob_url"),
@@ -348,7 +376,7 @@ class AzureSearchSkillsetEnrichmentService:
                         "azureOpenAIParameters": {
                             "resourceUri": settings.azure_foundry_openai_base_url,
                             "deploymentId": settings.azure_openai_embedding_deployment,
-                            "modelName": settings.azure_openai_embedding_deployment,
+                            "modelName": settings.azure_openai_embedding_model_name,
                         },
                     }
                 ],
@@ -392,11 +420,16 @@ class AzureSearchSkillsetEnrichmentService:
                     self._build_language_detection_skill(),
                 ]
             )
-        if include_prompt_skills and settings.azure_foundry_chat_enabled:
+        if self._profile_uses_embedding(active_profile):
             skills.extend(
                 [
                     self._build_prompt_seed_split_skill(),
                     self._build_prompt_seed_merge_skill(),
+                ]
+            )
+        if include_prompt_skills and settings.azure_foundry_chat_enabled:
+            skills.extend(
+                [
                     self._build_summary_prompt_skill(
                         prompt_skill_kind=prompt_skill_kind,
                         text_source="/document/prompt_seed_text",
@@ -416,14 +449,14 @@ class AzureSearchSkillsetEnrichmentService:
                 self._build_embedding_skill(
                     text_source="/document/summary_text"
                     if include_prompt_skills
-                    else "/document/content_markdown"
+                    else "/document/prompt_seed_text"
                 )
             )
 
         skillset: dict[str, Any] = {
             "name": self._target_skillset_name(active_profile),
             "description": (
-                f"v2 workshop profile '{active_profile.id}' for Blob-backed enrichment, "
+                f"Workshop profile '{active_profile.id}' for Blob-backed enrichment, "
                 "progressively adding built-in Azure AI Search skills."
             ),
             "skills": skills,
@@ -584,7 +617,7 @@ class AzureSearchSkillsetEnrichmentService:
         text_source: str,
     ) -> dict[str, Any]:
         if prompt_skill_kind != "chat_completion":
-            raise RuntimeError("Workshop v2 requires ChatCompletionSkill for Search-managed enrichment prompts.")
+            raise RuntimeError("This workshop requires ChatCompletionSkill for Search-managed enrichment prompts.")
         deployment_id = self._prompt_skill_deployment()
         if not deployment_id:
             raise RuntimeError("AZURE_SEARCH_LLM_DEPLOYMENT or AZURE_FOUNDRY_CHAT_DEPLOYMENT must be configured.")
@@ -657,7 +690,7 @@ class AzureSearchSkillsetEnrichmentService:
             "context": "/document",
             "resourceUri": settings.azure_foundry_openai_base_url,
             "deploymentId": settings.azure_openai_embedding_deployment,
-            "modelName": settings.azure_openai_embedding_deployment,
+            "modelName": settings.azure_openai_embedding_model_name,
             "dimensions": settings.azure_search_vector_dimensions,
             "inputs": [{"name": "text", "source": text_source}],
             "outputs": [{"name": "embedding", "targetName": settings.azure_search_vector_field_name}],
@@ -776,7 +809,7 @@ class AzureSearchSkillsetEnrichmentService:
     def _delete_enrichment_index(self, *, profile: WorkshopSkillProfile | None = None) -> None:
         active_profile = profile or self._active_profile()
         url = f"{self.endpoint}/indexes/{self._target_index_name(active_profile)}?api-version=2025-09-01"
-        response = requests.delete(url, headers=self.headers, timeout=60)
+        response = requests.delete(url, headers=self.headers, timeout=self._search_timeout())
         if response.status_code == 404:
             return
         self._raise_for_status(response)
@@ -844,7 +877,12 @@ class AzureSearchSkillsetEnrichmentService:
     def _run_indexer(self, *, indexer_name: str, max_attempts: int = 24) -> None:
         url = f"{self.endpoint}/indexers/{indexer_name}/search.run?api-version={settings.azure_search_indexer_api_version}"
         for attempt in range(max_attempts):
-            response = requests.post(url, headers=self.headers, data=json.dumps({}), timeout=60)
+            response = requests.post(
+                url,
+                headers=self.headers,
+                data=json.dumps({}),
+                timeout=self._search_timeout(),
+            )
             if response.status_code < 400:
                 return
             detail = response.text.strip().lower()
@@ -887,14 +925,19 @@ class AzureSearchSkillsetEnrichmentService:
 
     def _reset_indexer(self, *, indexer_name: str) -> None:
         url = f"{self.endpoint}/indexers/{indexer_name}/search.reset?api-version={settings.azure_search_indexer_api_version}"
-        response = requests.post(url, headers=self.headers, data=json.dumps({}), timeout=60)
+        response = requests.post(
+            url,
+            headers=self.headers,
+            data=json.dumps({}),
+            timeout=self._search_timeout(),
+        )
         self._raise_for_status(response)
 
     def _poll_indexer(self, *, indexer_name: str, max_attempts: int = 90) -> dict[str, Any]:
         url = f"{self.endpoint}/indexers/{indexer_name}/status?api-version={settings.azure_search_indexer_api_version}"
         last_payload: dict[str, Any] = {}
         for _ in range(max_attempts):
-            response = requests.get(url, headers=self.headers, timeout=60)
+            response = requests.get(url, headers=self.headers, timeout=self._search_timeout())
             self._raise_for_status(response)
             payload = response.json()
             last_payload = payload
@@ -970,12 +1013,20 @@ class AzureSearchSkillsetEnrichmentService:
             ),
             "filter": " or ".join(filter_clauses),
         }
-        response = requests.post(url, headers=self.headers, data=json.dumps(payload), timeout=60)
-        self._raise_for_status(response)
-        value = response.json().get("value") or []
-        for item in value:
-            if isinstance(item, dict):
-                return item
+        for attempt in range(1, 9):
+            response = self._request_with_conflict_retry(
+                "POST",
+                url,
+                body=payload,
+                max_attempts=6,
+                timeout=self._search_timeout(),
+            )
+            self._raise_for_status(response)
+            value = response.json().get("value") or []
+            for item in value:
+                if isinstance(item, dict):
+                    return item
+            sleep(min(20, 2 * attempt))
         return {}
 
     def _apply_enrichment_to_document(

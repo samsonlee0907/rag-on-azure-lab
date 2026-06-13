@@ -146,6 +146,24 @@ class IngestionPipeline:
                 f"Generated {len(chunks)} retrieval-friendly chunks.",
             )
 
+            intermediate_path = settings.artifacts_dir / f"{doc_id}_intermediate.json"
+            chunks_path = settings.artifacts_dir / f"{doc_id}_chunks.json"
+            intermediate_path.write_text(intermediate.model_dump_json(indent=2), encoding="utf-8")
+            chunks_path.write_text(
+                json.dumps([chunk.model_dump(mode="json") for chunk in chunks], indent=2),
+                encoding="utf-8",
+            )
+            job_store.mutate(
+                doc_id,
+                lambda current: self._store_artifact_metadata(
+                    current,
+                    intermediate,
+                    chunks,
+                    intermediate_path,
+                    chunks_path,
+                ),
+            )
+
             enrichment_snapshot: SearchSkillsetEnrichmentSnapshot | None = None
             native_snapshot: NativeMultimodalSnapshot | None = None
             if job.ingestion_mode == "hybrid_blob_skillset":
@@ -201,8 +219,6 @@ class IngestionPipeline:
             )
             job_store.mark_stage(doc_id, Stage.embedding, 82, "Prepared chunks for Azure AI Search publishing.")
 
-            intermediate_path = settings.artifacts_dir / f"{doc_id}_intermediate.json"
-            chunks_path = settings.artifacts_dir / f"{doc_id}_chunks.json"
             intermediate_path.write_text(intermediate.model_dump_json(indent=2), encoding="utf-8")
             chunks_path.write_text(
                 json.dumps([chunk.model_dump(mode="json") for chunk in enriched_chunks], indent=2),

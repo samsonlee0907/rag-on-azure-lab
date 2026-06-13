@@ -3,7 +3,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from backend.services.parsers import parser_registry
+from backend.services.parsers import AzureDocumentIntelligenceParser, parser_registry
 
 
 class ParserTests(unittest.TestCase):
@@ -53,6 +53,28 @@ class ParserTests(unittest.TestCase):
             self.assertEqual(profile.parser_path, "strict_configuration_error")
             with self.assertRaises(RuntimeError):
                 parser_registry.parse(path, "doc-zip", profile)
+
+    def test_document_intelligence_parser_uses_roles_to_build_sections_and_drops_page_artifacts(self) -> None:
+        parser = AzureDocumentIntelligenceParser()
+        result = {
+            "paragraphs": [
+                {"content": "1", "role": "pageNumber", "boundingRegions": [{"pageNumber": 1}]},
+                {"content": "CONTENTS", "role": "title", "boundingRegions": [{"pageNumber": 1}]},
+                {"content": "Suspended Ceilings 629", "boundingRegions": [{"pageNumber": 1}]},
+                {"content": "Paints and Painting", "role": "sectionHeading", "boundingRegions": [{"pageNumber": 633}]},
+                {
+                    "content": "Composition ~ the basic components are binder, pigment, and solvents.",
+                    "boundingRegions": [{"pageNumber": 633}],
+                },
+            ]
+        }
+
+        blocks = parser._extract_paragraph_blocks(result)
+        sections = parser._build_structured_sections(blocks, "Layout Extraction")
+
+        self.assertEqual([section.heading for section in sections], ["CONTENTS", "Paints and Painting"])
+        self.assertEqual(sections[0].paragraphs, ["Suspended Ceilings 629"])
+        self.assertEqual(sections[1].paragraphs[0], "Composition ~ the basic components are binder, pigment, and solvents.")
 
 
 if __name__ == "__main__":

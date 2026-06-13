@@ -21,6 +21,12 @@ from backend.services.foundry_openai import describe_image_with_foundry
 
 logger = logging.getLogger(__name__)
 
+HEADING_ROLE_NAMES = {"title", "sectionheading"}
+NON_BODY_ROLE_NAMES = {"pageheader", "pagefooter", "pagenumber"}
+PART_HEADING_PATTERN = re.compile(r"^(part|chapter)\b", re.IGNORECASE)
+HEADING_NUMBER_PATTERN = re.compile(r"^\d{1,4}\s+")
+TABLE_OF_CONTENTS_HEADING_PATTERN = re.compile(r"^(contents|table of contents)\b", re.IGNORECASE)
+
 try:
     from pypdf import PdfReader, PdfWriter
 except Exception:  # pragma: no cover - optional dependency
@@ -59,6 +65,7 @@ class ParagraphBlock:
     text: str
     page_start: int | None = None
     page_end: int | None = None
+    role: str | None = None
 
 
 def _resampling_filter() -> object:
@@ -121,7 +128,14 @@ def _normalize_figure_image(
     return artifact_path, metadata
 
 
-def _extract_pdf_figure_artifacts(path: Path, doc_id: str, source_name: str) -> list[dict[str, object]]:
+def _extract_pdf_figure_artifacts(
+    path: Path,
+    doc_id: str,
+    source_name: str,
+    *,
+    describe_images: bool | None = None,
+    max_artifacts: int | None = None,
+) -> list[dict[str, object]]:
     if PdfReader is None:
         return []
     try:
@@ -129,10 +143,16 @@ def _extract_pdf_figure_artifacts(path: Path, doc_id: str, source_name: str) -> 
     except Exception:
         return []
 
+    if describe_images is None:
+        describe_images = settings.parser_image_understanding_enabled
+    if max_artifacts is None:
+        max_artifacts = settings.parser_figure_max_artifacts
+
     figure_dir = settings.artifacts_dir / f"{doc_id}_figures"
     figure_dir.mkdir(parents=True, exist_ok=True)
     blob_store = build_blob_artifact_store()
     figures: list[dict[str, object]] = []
+    artifact_limit_reached = False
     for page_number, page in enumerate(reader.pages, start=1):
         page_images = getattr(page, "images", None)
         if page_images is None:
@@ -194,7 +214,7 @@ def _extract_pdf_figure_artifacts(path: Path, doc_id: str, source_name: str) -> 
                         extra={"context": {"artifact_path": str(artifact_path), "error": str(exc)}},
                     )
                     figure["blob_upload_error"] = str(exc)
-            if settings.enable_image_understanding and settings.azure_foundry_chat_enabled:
+            if describe_images:
                 try:
                     description, model_endpoint = describe_image_with_foundry(
                         artifact_path,
@@ -207,6 +227,21 @@ def _extract_pdf_figure_artifacts(path: Path, doc_id: str, source_name: str) -> 
                     logger.warning("image description failed", extra={"context": {"artifact_path": str(artifact_path), "error": str(exc)}})
                     figure["description_error"] = str(exc)
             figures.append(figure)
+            if max_artifacts > 0 and len(figures) >= max_artifacts:
+                artifact_limit_reached = True
+                logger.info(
+                    "parser figure extraction reached document limit",
+                    extra={
+                        "context": {
+                            "doc_id": doc_id,
+                            "source_name": source_name,
+                            "artifact_limit": max_artifacts,
+                        }
+                    },
+                )
+                break
+        if artifact_limit_reached:
+            break
     return figures
 
 
@@ -557,13 +592,16 @@ class AzureDocumentIntelligenceParser(AzureCognitiveAuthMixin, BaseParser):
         return min(page_limit_segment_size, size_based_segment_size)
 
     def _figure_sections(self, path: Path, doc_id: str, metadata: dict[str, object]) -> list[SectionNode]:
-        if path.suffix.lower() != ".pdf":
+        if path.suffix.lower() != ".pdf" or not settings.parser_figure_extraction_enabled:
             return []
         figures = _extract_pdf_figure_artifacts(path, doc_id, path.name)
         if not figures:
             return []
         metadata["figure_count"] = len(figures)
         metadata["figure_artifacts"] = figures
+        if settings.parser_figure_max_artifacts > 0 and len(figures) >= settings.parser_figure_max_artifacts:
+            metadata["figure_artifacts_truncated"] = True
+            metadata["figure_artifact_limit"] = settings.parser_figure_max_artifacts
         paragraphs = [
             (
                 f"Figure extracted from page {figure['page_number']}: {figure['image_name']} | "
@@ -638,6 +676,9 @@ class AzureDocumentIntelligenceParser(AzureCognitiveAuthMixin, BaseParser):
             content = paragraph.get("content", "").strip()
             if not content:
                 continue
+            role = self._normalize_paragraph_role(paragraph.get("role"))
+            if self._should_drop_paragraph_block(content, role):
+                continue
             page_numbers: list[int] = []
             for region in paragraph.get("boundingRegions") or []:
                 page_number = region.get("pageNumber")
@@ -648,11 +689,69 @@ class AzureDocumentIntelligenceParser(AzureCognitiveAuthMixin, BaseParser):
                     text=content,
                     page_start=min(page_numbers) if page_numbers else None,
                     page_end=max(page_numbers) if page_numbers else None,
+                    role=role,
                 )
             )
         if not blocks and result.get("content"):
             blocks.append(ParagraphBlock(text=str(result["content"]).strip()))
         return blocks
+
+    def _normalize_paragraph_role(self, value: object) -> str | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        return re.sub(r"[^a-z]", "", value.lower())
+
+    def _should_drop_paragraph_block(self, text: str, role: str | None) -> bool:
+        normalized = " ".join(text.split()).strip()
+        if not normalized:
+            return True
+        if role in NON_BODY_ROLE_NAMES:
+            return True
+        if re.fullmatch(r"\d{1,4}", normalized):
+            return True
+        alpha_count = sum(1 for char in normalized if char.isalpha())
+        digit_count = sum(1 for char in normalized if char.isdigit())
+        if alpha_count == 0 and digit_count <= 8:
+            return True
+        if alpha_count <= 2 and len(normalized) <= 6 and not normalized.isalpha():
+            return True
+        if re.fullmatch(r"[\W_]+", normalized):
+            return True
+        return False
+
+    def _normalize_heading_text(self, text: str) -> str:
+        normalized = " ".join(text.replace("\n", " ").split()).strip(" -–—:")
+        normalized = HEADING_NUMBER_PATTERN.sub("", normalized)
+        return normalized or "Untitled Section"
+
+    def _looks_like_heading_text(self, text: str) -> bool:
+        normalized = self._normalize_heading_text(text)
+        if not normalized or len(normalized) > 120:
+            return False
+        if normalized.endswith((".", ";", "?", "!")):
+            return False
+        if re.search(r"\b\d{1,4}$", normalized):
+            return False
+        if TABLE_OF_CONTENTS_HEADING_PATTERN.match(normalized):
+            return True
+        if PART_HEADING_PATTERN.match(normalized):
+            return True
+        if " ~ " in normalized:
+            return False
+        words = normalized.split()
+        if not 1 <= len(words) <= 12:
+            return False
+        alpha_count = sum(1 for char in normalized if char.isalpha())
+        if alpha_count < max(3, len(normalized) // 3):
+            return False
+        capitalized_words = sum(1 for word in words if word[:1].isupper())
+        uppercase_words = sum(1 for word in words if word.isupper() and len(word) > 1)
+        return capitalized_words >= max(1, len(words) - 1) or uppercase_words >= max(1, len(words) // 2)
+
+    def _is_heading_block(self, block: ParagraphBlock) -> bool:
+        if block.role in HEADING_ROLE_NAMES:
+            return True
+        return self._looks_like_heading_text(block.text)
 
     def _build_structured_sections(
         self,
@@ -663,16 +762,11 @@ class AzureDocumentIntelligenceParser(AzureCognitiveAuthMixin, BaseParser):
         preamble: list[ParagraphBlock] = []
         current: SectionNode | None = None
         for paragraph in paragraphs:
-            heading_match = re.match(r"^Section\s+(\d+)[\.\-:]\s+(.*)$", paragraph.text)
-            if heading_match:
-                normalized_heading = f"Section {heading_match.group(1)}. {heading_match.group(2).strip()}"
-                if current is not None and (
-                    current.heading == normalized_heading
-                    or normalized_heading.startswith(current.heading)
-                    or current.heading.startswith(normalized_heading)
-                ):
+            if self._is_heading_block(paragraph):
+                normalized_heading = self._normalize_heading_text(paragraph.text)
+                if current is not None and current.heading == normalized_heading and not current.paragraphs:
                     continue
-                if current is not None:
+                if current is not None and (current.paragraphs or current.tables or current.children):
                     sections.append(current)
                 current = SectionNode(
                     heading=normalized_heading,
@@ -891,6 +985,8 @@ class FallbackPdfParser(BaseParser):
             return paragraphs
 
     def _figure_sections(self, path: Path, doc_id: str, metadata: dict[str, object]) -> list[SectionNode]:
+        if not settings.parser_figure_extraction_enabled:
+            return []
         figures = _extract_pdf_figure_artifacts(path, doc_id, path.name)
         if not figures:
             return []

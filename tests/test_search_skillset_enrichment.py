@@ -16,19 +16,23 @@ class SearchSkillsetEnrichmentTests(unittest.TestCase):
             patch("backend.services.search_skillset_enrichment.settings.workshop_skill_profile", "genai_enrichment"),
             patch("backend.services.search_skillset_enrichment.settings.azure_search_enable_integrated_vectorization", True),
             patch("backend.services.search_skillset_enrichment.settings.azure_openai_embedding_deployment", "text-embedding-3-large"),
+            patch("backend.services.search_skillset_enrichment.settings.azure_openai_embedding_model_name", "text-embedding-3-large"),
             patch("backend.services.search_skillset_enrichment.settings.azure_foundry_resource_endpoint", "https://example.cognitiveservices.azure.com/"),
         ):
             body = service._build_enrichment_index_body()
 
         field_names = [field["name"] for field in body["fields"]]
         field_by_name = {field["name"]: field for field in body["fields"]}
-        self.assertEqual(body["name"], "enterprise-knowledge-enrichment-index-v2-genai")
+        self.assertEqual(body["name"], "ai-search-lab-enrichment-index-genai")
         self.assertIn("keyword_hints_raw", field_names)
         self.assertIn("split_chunks", field_names)
         self.assertIn("content_vector", field_names)
         self.assertEqual(field_by_name["content_markdown_raw"]["searchable"], False)
         self.assertEqual(field_by_name["prompt_seed_text"]["searchable"], True)
         self.assertIn("vectorSearch", body)
+        vectorizer = body["vectorSearch"]["vectorizers"][0]["azureOpenAIParameters"]
+        self.assertEqual(vectorizer["deploymentId"], "text-embedding-3-large")
+        self.assertEqual(vectorizer["modelName"], "text-embedding-3-large")
 
     def test_build_indexer_body_maps_doc_key_and_keyword_hints_raw(self) -> None:
         service = AzureSearchSkillsetEnrichmentService()
@@ -78,17 +82,26 @@ class SearchSkillsetEnrichmentTests(unittest.TestCase):
         self.assertIn("#Microsoft.Skills.Vision.OcrSkill", skill_types)
         self.assertIn("#Microsoft.Skills.Vision.ImageAnalysisSkill", skill_types)
         self.assertIn("#Microsoft.Skills.Text.LanguageDetectionSkill", skill_types)
-        self.assertEqual(body["name"], "enterprise-knowledge-skillset-v2-visual-nlp")
+        self.assertEqual(body["name"], "ai-search-lab-skillset-visual-nlp")
+
+    def test_baseline_skillset_body_keeps_extractor_only_when_prompt_enrichment_is_disabled(self) -> None:
+        service = AzureSearchSkillsetEnrichmentService()
+
+        with patch("backend.services.search_skillset_enrichment.settings.workshop_skill_profile", "baseline_extract"):
+            body = service._build_skillset_body(prompt_skill_kind="none")
+
+        skill_names = [skill["name"] for skill in body["skills"]]
+        self.assertEqual(skill_names, ["#documentExtraction"])
 
     @patch("backend.services.search_skillset_enrichment.settings.azure_foundry_resource_endpoint", new="https://example.cognitiveservices.azure.com/")
-    @patch("backend.services.search_skillset_enrichment.settings.azure_foundry_chat_deployment", new="gpt-5-4")
-    def test_build_summary_prompt_skill_supports_chat_completion_fallback(self) -> None:
+    @patch("backend.services.search_skillset_enrichment.settings.azure_search_llm_deployment", new="gpt-5-4-mini-search")
+    def test_build_summary_prompt_skill_uses_search_llm_deployment(self) -> None:
         service = AzureSearchSkillsetEnrichmentService()
 
         skill = service._build_summary_prompt_skill(prompt_skill_kind="chat_completion")
 
         self.assertEqual(skill["@odata.type"], "#Microsoft.Skills.Custom.ChatCompletionSkill")
-        self.assertIn("/openai/deployments/gpt-5-4/chat/completions", skill["uri"])
+        self.assertIn("/openai/deployments/gpt-5-4-mini-search/chat/completions", skill["uri"])
         self.assertNotIn("apiKey", skill)
         self.assertNotIn("prompt", skill)
         self.assertEqual([entry["name"] for entry in skill["inputs"]], ["text", "systemMessage", "userMessage"])
@@ -99,8 +112,11 @@ class SearchSkillsetEnrichmentTests(unittest.TestCase):
         service = AzureSearchSkillsetEnrichmentService()
 
         with (
+            patch("backend.services.search_skillset_enrichment.settings.workshop_skill_profile", "genai_enrichment"),
             patch("backend.services.search_skillset_enrichment.settings.azure_foundry_resource_endpoint", "https://example.cognitiveservices.azure.com/"),
-            patch("backend.services.search_skillset_enrichment.settings.azure_foundry_chat_deployment", "gpt-5-4"),
+            patch("backend.services.search_skillset_enrichment.settings.azure_foundry_chat_deployment", "gpt-5-4-mini-chat"),
+            patch("backend.services.search_skillset_enrichment.settings.azure_openai_embedding_deployment", "text-embedding-3-large-vector"),
+            patch("backend.services.search_skillset_enrichment.settings.azure_openai_embedding_model_name", "text-embedding-3-large"),
         ):
             body = service._build_skillset_body()
 
@@ -115,6 +131,36 @@ class SearchSkillsetEnrichmentTests(unittest.TestCase):
             skills_by_name["#keywordPrompt"]["inputs"][0]["source"],
             "/document/summary_text",
         )
+
+    def test_chunk_vector_skillset_embeds_prompt_seed_when_prompt_enrichment_is_disabled(self) -> None:
+        service = AzureSearchSkillsetEnrichmentService()
+
+        with (
+            patch("backend.services.search_skillset_enrichment.settings.workshop_skill_profile", "chunk_vector"),
+            patch("backend.services.search_skillset_enrichment.settings.azure_foundry_resource_endpoint", "https://example.cognitiveservices.azure.com/"),
+            patch("backend.services.search_skillset_enrichment.settings.azure_openai_embedding_deployment", "text-embedding-3-large-vector"),
+            patch("backend.services.search_skillset_enrichment.settings.azure_openai_embedding_model_name", "text-embedding-3-large"),
+        ):
+            body = service._build_skillset_body(prompt_skill_kind="none")
+
+        skills_by_name = {skill["name"]: skill for skill in body["skills"]}
+        self.assertIn("#splitPromptSeed", skills_by_name)
+        self.assertIn("#mergePromptSeed", skills_by_name)
+        self.assertEqual(
+            skills_by_name["#contentEmbedding"]["inputs"][0]["source"],
+            "/document/prompt_seed_text",
+        )
+
+    def test_baseline_indexer_body_omits_prompt_outputs_when_prompt_enrichment_is_disabled(self) -> None:
+        service = AzureSearchSkillsetEnrichmentService()
+
+        with patch("backend.services.search_skillset_enrichment.settings.workshop_skill_profile", "baseline_extract"):
+            body = service._build_indexer_body(prompt_skill_kind="none")
+
+        output_sources = [entry["sourceFieldName"] for entry in body["outputFieldMappings"]]
+        self.assertNotIn("/document/prompt_seed_text", output_sources)
+        self.assertNotIn("/document/summary_text", output_sources)
+        self.assertNotIn("/document/keyword_hints_raw", output_sources)
 
     @patch("backend.services.search_skillset_enrichment.settings.azure_foundry_resource_endpoint", new="https://example.cognitiveservices.azure.com/")
     def test_build_skillset_body_attaches_billable_foundry_resource(self) -> None:
@@ -182,7 +228,7 @@ class SearchSkillsetEnrichmentTests(unittest.TestCase):
             },
             {
                 "blob_url": "https://storage.example/documents/doc-1/report.pdf",
-                "blob_name": "v2/doc-1/report.pdf",
+                "blob_name": "workshop/doc-1/report.pdf",
             },
         )
 

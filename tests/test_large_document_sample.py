@@ -166,6 +166,46 @@ class LargeDocumentSampleTests(unittest.TestCase):
         self.assertEqual((sections[0].paragraph_spans[0].page_start, sections[0].paragraph_spans[0].page_end), (11, 12))
         self.assertEqual((sections[1].paragraph_spans[0].page_start, sections[1].paragraph_spans[0].page_end), (13, 14))
 
+    def test_baseline_profile_skips_parser_figure_extraction(self) -> None:
+        parser = AzureDocumentIntelligenceParser()
+        metadata: dict[str, object] = {}
+
+        with (
+            patch.object(settings, "workshop_skill_profile", "baseline_extract"),
+            patch.object(settings, "enable_parser_figure_extraction", False),
+            patch(
+                "backend.services.parsers._extract_pdf_figure_artifacts",
+                side_effect=AssertionError("parser figure extraction should be skipped"),
+            ),
+        ):
+            sections = parser._figure_sections(Path("report.pdf"), "doc-baseline", metadata)
+
+        self.assertEqual(sections, [])
+        self.assertEqual(metadata, {})
+
+    def test_visual_profile_enables_parser_figure_extraction(self) -> None:
+        parser = AzureDocumentIntelligenceParser()
+        metadata: dict[str, object] = {}
+        figures = [
+            {
+                "artifact_id": "fig-1",
+                "page_number": 4,
+                "image_name": "diagram.png",
+                "artifact_path": "C:/temp/diagram.png",
+            }
+        ]
+
+        with (
+            patch.object(settings, "workshop_skill_profile", "visual_nlp"),
+            patch.object(settings, "enable_parser_figure_extraction", False),
+            patch("backend.services.parsers._extract_pdf_figure_artifacts", return_value=figures),
+        ):
+            sections = parser._figure_sections(Path("report.pdf"), "doc-visual", metadata)
+
+        self.assertEqual(len(sections), 1)
+        self.assertEqual(metadata["figure_count"], 1)
+        self.assertEqual(metadata["figure_artifacts"], figures)
+
 
 if __name__ == "__main__":
     unittest.main()

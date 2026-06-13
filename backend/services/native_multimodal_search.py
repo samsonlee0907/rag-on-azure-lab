@@ -345,7 +345,7 @@ class NativeMultimodalSearchService:
             return None
         return self._build_knowledge_agent_model(
             deployment_id=settings.azure_openai_embedding_deployment,
-            model_name=settings.azure_openai_embedding_deployment,
+            model_name=settings.azure_openai_embedding_model_name,
             use_managed_identity=True,
             resource_uri=settings.azure_foundry_openai_base_url,
         )

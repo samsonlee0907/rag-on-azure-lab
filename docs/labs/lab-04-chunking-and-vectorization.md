@@ -157,7 +157,8 @@ body["vectorQueries"] = [{"kind": "vector", "vector": query_vector}]
 | Variable | What it controls | Good workshop variation |
 | --- | --- | --- |
 | `WORKSHOP_SKILL_PROFILE` | Activates this profile. | `chunk_vector` |
-| `AZURE_OPENAI_EMBEDDING_DEPLOYMENT` | Embedding model used by the Search skill. | Point to `text-embedding-3-large` or your preferred embedding deployment. |
+| `AZURE_OPENAI_EMBEDDING_DEPLOYMENT` | Embedding deployment used by the Search skill. | Point to your embedding deployment alias, such as `text-embedding-3-large-vector`. |
+| `AZURE_OPENAI_EMBEDDING_MODEL_NAME` | Embedding model family used by the Search vectorizer. | Keep this on `text-embedding-3-large` unless you intentionally switch model families. |
 | `AZURE_SEARCH_ENABLE_INTEGRATED_VECTORIZATION` | Whether Search writes vector fields during enrichment. | Keep `true` for this lab. |
 | `CHUNK_SIZE_TOKENS` | App-owned canonical chunk size. | Lower it to show more granular retrieval. |
 | `CHUNK_OVERLAP_TOKENS` | App-owned chunk overlap. | Increase it to show better continuity at boundaries. |

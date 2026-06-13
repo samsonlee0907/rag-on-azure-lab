@@ -136,7 +136,9 @@ if scoped_pages and len(scoped_pages) <= MAX_DIRECT_CHUNK_IMAGE_PAGE_SPAN:
 | Variable | What it controls | Good workshop variation |
 | --- | --- | --- |
 | `WORKSHOP_SKILL_PROFILE` | Activates this profile. | `visual_nlp` |
+| `ENABLE_PARSER_FIGURE_EXTRACTION` | Turns on parser-side figure extraction for a side-by-side comparison with Search-side visual skills. | Set `true` if you want chunk-linked figure artifacts in the portal. |
 | `ENABLE_IMAGE_UNDERSTANDING` | Parser-side figure understanding. | Keep `true` if you want richer figure metadata. |
+| `PARSER_FIGURE_MAX_ARTIFACTS` | Caps how many figure artifacts the parser will process from one PDF. | Lower it for very large handbooks so the lab finishes faster. |
 | `MAX_FIGURE_IMAGE_PIXELS` | Guards oversized extracted images. | Lower it if you want to demonstrate safety limits. |
 | `MAX_FIGURE_IMAGE_DIMENSION` | Caps large figure dimensions. | Lower it if image-heavy PDFs are causing trouble. |
 | `AZURE_SEARCH_REQUIRE_BLOB_SKILLSET_SUCCESS` | Makes OCR and image-analysis failures visible. | Keep `true` in workshops. |

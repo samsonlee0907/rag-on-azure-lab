@@ -26,9 +26,10 @@ The core workshop uses these model roles:
 
 Recommended deployment names used in the workshop:
 
-- `gpt-5-4`
-- `gpt-5-mini`
-- `text-embedding-3-large`
+- `gpt-5-4-mini-chat`
+- `gpt-5-4-mini-search`
+- `gpt-5-4-mini-native`
+- `text-embedding-3-large-vector`
 
 ## Step 2 - Copy the environment template
 
@@ -68,7 +69,9 @@ AZURE_FOUNDRY_CHAT_DEPLOYMENT=
 AZURE_SEARCH_LLM_DEPLOYMENT=
 AZURE_SEARCH_LLM_MODEL_NAME=
 AZURE_OPENAI_EMBEDDING_DEPLOYMENT=
+AZURE_OPENAI_EMBEDDING_MODEL_NAME=
 AZURE_STORAGE_ACCOUNT=
+AZURE_STORAGE_ACCOUNT_KEY=
 ```
 
 ## Step 5 - Validate the app configuration contract
@@ -100,13 +103,17 @@ WORKSHOP_SKILL_PROFILE=baseline_extract
 DEFAULT_INGESTION_MODE=hybrid_blob_skillset
 AZURE_SEARCH_ENABLE_ANSWER_SYNTHESIS=true
 AZURE_SEARCH_ENABLE_INTEGRATED_VECTORIZATION=true
-AZURE_SEARCH_LLM_DEPLOYMENT=
-AZURE_OPENAI_EMBEDDING_DEPLOYMENT=
+AZURE_SEARCH_LLM_DEPLOYMENT=gpt-5-4-mini-search
+AZURE_SEARCH_NATIVE_CHAT_COMPLETION_DEPLOYMENT=gpt-5-4-mini-native
+AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-large-vector
 ```
 
 - `WORKSHOP_SKILL_PROFILE` decides which skillset profile the Search indexer will build.
 - `AZURE_SEARCH_LLM_DEPLOYMENT` is the planning and answer-synthesis model used by Azure AI Search.
+- `AZURE_SEARCH_NATIVE_CHAT_COMPLETION_DEPLOYMENT` is the native multimodal answer-synthesis model for the later image-serving lab.
 - `AZURE_OPENAI_EMBEDDING_DEPLOYMENT` is the embedding model used for vector search.
+- `AZURE_STORAGE_ACCOUNT_KEY` should stay blank in the workshop unless you intentionally switch away from the RBAC-based Blob path.
+- In this workshop, every LLM-facing deployment uses `gpt-5.4-mini`, but they stay separate by deployment name so each role can scale independently and avoid shared throttling.
 
 The app exposes the interpreted configuration so the audience can verify it without reading logs:
 
@@ -129,7 +136,10 @@ return {
 | Variable | What it controls | Typical workshop use |
 | --- | --- | --- |
 | `AZURE_SEARCH_LLM_DEPLOYMENT` | Search-side model for planning and answer synthesis. | Required for `agentic` retrieval. |
+| `AZURE_SEARCH_NATIVE_CHAT_COMPLETION_DEPLOYMENT` | Native multimodal answer-synthesis model. | Keep separate from the Search LLM deployment even though both use `gpt-5.4-mini`. |
 | `AZURE_OPENAI_EMBEDDING_DEPLOYMENT` | Embedding model for vector and hybrid search. | Required from Lab 04 onward. |
+| `AZURE_OPENAI_EMBEDDING_MODEL_NAME` | Embedding model family for the Search vectorizer. | Keep `text-embedding-3-large` unless you switch embedding families. |
+| `AZURE_STORAGE_ACCOUNT_KEY` | Optional shared-key auth for app-side Blob clients. | Leave blank for the workshop so Blob access uses the signed-in Azure identity and RBAC. |
 | `AZURE_SEARCH_ENABLE_ANSWER_SYNTHESIS` | Whether Azure AI Search returns a synthesized answer or extractive data. | Keep `true` for agentic demos. |
 | `AZURE_SEARCH_ENABLE_INTEGRATED_VECTORIZATION` | Whether the Search-managed enrichment lane writes vectors. | Keep `true` from Lab 04 onward. |
 | `AZURE_SEARCH_SKILLSET_PREFERRED_EXTRACTOR` | Switches between `document_extraction` and `content_understanding`. | Leave at `document_extraction` until Lab 08. |
@@ -140,7 +150,22 @@ return {
 - keep the first working configuration minimal and explicit
 - validate runtime interpretation through `/api/config` before debugging deeper
 - treat planning models and embedding models as separate dependencies
+- use separate deployment names per role even when the same supported GPT family is used underneath
+- avoid sharing one deployment between Search planning and native multimodal answer synthesis in a workshop, or they will compete for the same TPM/RPM budget
 - keep optional modes off until the core workshop path is stable
+
+## Throughput note
+
+If Azure AI Search returns a model-action `429 TooManyRequests`, the bottleneck is usually the Azure OpenAI deployment attached to the knowledge base, not the Search service itself. For workshop provisioning, start with explicit deployment capacities such as:
+
+```powershell
+-ChatDeploymentCapacity 100 `
+-PlanningDeploymentCapacity 100 `
+-NativeChatDeploymentCapacity 100 `
+-EmbeddingDeploymentCapacity 100
+```
+
+Raise the planning and native capacities further if you expect many concurrent attendees sending agentic or multimodal questions at the same time and your quota allows it.
 
 ## Files To Inspect
 

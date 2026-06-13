@@ -11,6 +11,7 @@ from backend.core.config import SearchKnowledgeSourceConfig
 from backend.domain.models import ChatCitation, ChunkRecord
 from backend.services.chat import (
     _extract_citations,
+    _build_direct_search_answer,
     build_chat_response,
     build_query_rescue,
     local_preview_chat,
@@ -63,6 +64,41 @@ class ChatServiceTests(unittest.TestCase):
         self.assertEqual(rescue["effective_question"], "What does NASA mention about Earth?")
         self.assertEqual(rescue["corrections"], [{"from": "Nasus", "to": "NASA"}])
 
+    def test_build_query_rescue_does_not_rewrite_common_english_terms(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            chunks_path = Path(temp_dir) / "chunks.json"
+            chunks_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "chunk_id": "chunk-1",
+                            "doc_id": "doc-handbook",
+                            "source_name": "handbook.pdf",
+                            "checksum": "abc",
+                            "clean_text": "Ground floors and tree preservation are both discussed in separate chapters.",
+                            "summary_text": "Ground floors and tree preservation overview.",
+                            "keyword_hints": ["ground floor", "tree preservation"],
+                            "token_estimate": 10,
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            job = SimpleNamespace(
+                doc_id="doc-handbook",
+                status="ready",
+                file_name="handbook.pdf",
+                chunks_path=str(chunks_path),
+            )
+
+            rescue = build_query_rescue(
+                "What three groups can suspended ceilings be placed in?",
+                ["doc-handbook"],
+                jobs=[job],
+            )
+
+        self.assertIsNone(rescue)
+
     def test_extracts_citations_from_activity_references(self) -> None:
         payload = {
             "activity": [
@@ -97,7 +133,7 @@ class ChatServiceTests(unittest.TestCase):
                 {
                     "type": "searchIndex",
                     "id": 0,
-                    "knowledgeSourceName": "enterprise-knowledge-source",
+                    "knowledgeSourceName": "ai-search-lab-source",
                     "count": 7,
                     "elapsedMs": 123,
                     "searchIndexArguments": {"search": "future of generative AI energy demand"},
@@ -110,13 +146,37 @@ class ChatServiceTests(unittest.TestCase):
 
         self.assertEqual(response.diagnostics["subqueries"][0]["search"], "future of generative AI energy demand")
 
+    def test_build_direct_search_answer_uses_toc_for_navigation_question(self) -> None:
+        citations = [
+            ChatCitation(
+                title="Building Construction Handbook.pdf",
+                chunk_id="chunk-text",
+                doc_id="doc-1",
+                content_type="text",
+                snippet="Paint is applied in several coats to provide surface protection.",
+                reference_id=1,
+            ),
+            ChatCitation(
+                title="Building Construction Handbook.pdf",
+                chunk_id="chunk-toc",
+                doc_id="doc-1",
+                content_type="table_of_contents",
+                snippet="Suspended ceilings 630 Paints and painting 633 Joinery production 647",
+                reference_id=2,
+            ),
+        ]
+
+        answer = _build_direct_search_answer("Which page covers paints and painting?", citations)
+
+        self.assertEqual(answer, 'The contents listing points to "Paints and painting" on page 633 [2].')
+
     def test_build_chat_response_adds_humanized_subquery_display(self) -> None:
         payload = {
             "activity": [
                 {
                     "type": "searchIndex",
                     "id": 0,
-                    "knowledgeSourceName": "enterprise-knowledge-source",
+                    "knowledgeSourceName": "ai-search-lab-source",
                     "count": 7,
                     "elapsedMs": 123,
                     "searchIndexArguments": {
@@ -178,6 +238,54 @@ class ChatServiceTests(unittest.TestCase):
         self.assertEqual(response.citations[0].asset_image_paths, ["asset-one.jpg", "asset-two.jpg"])
         self.assertEqual(response.citations[0].reference_id, 1)
 
+    def test_build_chat_response_prioritizes_referenced_citations_and_drops_unresolved_markers(self) -> None:
+        payload = {
+            "response": [
+                {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Paint contains binder and pigment. [ref_id:7] It appears in the handbook contents. [ref_id:9]",
+                        }
+                    ]
+                }
+            ],
+            "citations": [
+                {"id": "1", "title": "Source 1", "content": "Irrelevant"},
+                {"id": "7", "title": "Source 7", "content": "Binder and pigment are core paint components."},
+                {"id": "9", "title": "Source 9", "content": "Paints and painting appears on page 634."},
+            ],
+        }
+
+        response = build_chat_response(payload)
+
+        self.assertEqual(
+            response.answer,
+            "Paint contains binder and pigment. [1] It appears in the handbook contents. [2]",
+        )
+        self.assertEqual([citation.raw_reference_id for citation in response.citations[:2]], ["7", "9"])
+
+    def test_build_chat_response_removes_unmapped_ref_markers(self) -> None:
+        payload = {
+            "response": [
+                {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "The answer cites a missing reference. [ref_id:99]",
+                        }
+                    ]
+                }
+            ],
+            "citations": [
+                {"id": "1", "title": "Source 1", "content": "Only one citation is available."},
+            ],
+        }
+
+        response = build_chat_response(payload)
+
+        self.assertEqual(response.answer, "The answer cites a missing reference.")
+
     def test_build_chat_response_extracts_azure_blob_subqueries(self) -> None:
         payload = {
             "activity": [
@@ -197,6 +305,67 @@ class ChatServiceTests(unittest.TestCase):
 
         self.assertEqual(response.diagnostics["subqueries"][0]["activity_type"], "azureBlob")
         self.assertEqual(response.diagnostics["subqueries"][0]["search"], "show me the blueprint diagram")
+
+    @patch("backend.services.chat.call_foundry_text")
+    def test_synthesize_grounded_chat_uses_extractive_answer_for_direct_search(self, call_foundry_text_mock) -> None:
+        payload = {
+            "diagnostics": {
+                "search_method": "full_text",
+                "mode": "full_text_search",
+            },
+            "citations": [
+                {
+                    "title": "Building Construction Handbook",
+                    "chunk_id": "chunk-1",
+                    "doc_id": "doc-1",
+                    "page_numbers": [640],
+                    "snippet": (
+                        "The latter method is simple since most suspended ceiling types can be placed in one of three "
+                        "groups :- 1. Jointless suspended ceilings. 2. Panelled suspended ceilings - see page 632. "
+                        "3. Decorative and open suspended ceilings - see page 633."
+                    ),
+                }
+            ],
+        }
+
+        response = synthesize_grounded_chat(
+            "What three groups can suspended ceilings be placed in?",
+            payload,
+        )
+
+        call_foundry_text_mock.assert_not_called()
+        self.assertIn("Jointless suspended ceilings", response.answer)
+        self.assertIn("Panelled suspended ceilings", response.answer)
+        self.assertIn("Decorative and open suspended ceilings", response.answer)
+
+    def test_synthesize_grounded_chat_direct_search_ignores_page_numbers_inside_list_items(self) -> None:
+        payload = {
+            "diagnostics": {
+                "search_method": "full_text",
+                "mode": "full_text_search",
+            },
+            "citations": [
+                {
+                    "title": "Building Construction Handbook",
+                    "chunk_id": "chunk-1",
+                    "doc_id": "doc-1",
+                    "page_numbers": [640],
+                    "snippet": (
+                        "The latter method is simple since most suspended ceiling types can be placed in one of three "
+                        "groups :- 1. Jointless suspended ceilings. 2. Panelled suspended ceilings - see page 632. "
+                        "3. Decorative and open suspended ceilings - see page 633."
+                    ),
+                }
+            ],
+        }
+
+        response = synthesize_grounded_chat(
+            "What three groups can suspended ceilings be placed in?",
+            payload,
+        )
+
+        self.assertNotIn("see page", response.answer.lower())
+        self.assertIn("Decorative and open suspended ceilings", response.answer)
 
     def test_extract_citations_clears_broad_irrelevant_image_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -273,20 +442,20 @@ class ChatServiceTests(unittest.TestCase):
                     "doc_id": "doc-construction",
                     "chunk_id": "construction-chunk-1",
                     "snippet": "Construction delivery is becoming more complex.",
-                    "knowledgeSourceName": "enterprise-knowledge-source",
-                    "index_name": "enterprise-knowledge-index",
+                    "knowledgeSourceName": "ai-search-lab-source",
+                    "index_name": "ai-search-lab-index",
                 }
             ],
             "diagnostics": {
                 "knowledge_source_index_map": {
-                    "enterprise-knowledge-source": "enterprise-knowledge-index",
+                    "ai-search-lab-source": "ai-search-lab-index",
                     "energy-knowledge-source": "energy-knowledge-index",
                 }
             },
             "activity": [
                 {
                     "type": "searchIndex",
-                    "knowledgeSourceName": "enterprise-knowledge-source",
+                    "knowledgeSourceName": "ai-search-lab-source",
                     "count": 10,
                     "elapsedMs": 100,
                     "searchIndexArguments": {"search": "construction delivery complexity"},
@@ -305,7 +474,7 @@ class ChatServiceTests(unittest.TestCase):
 
         self.assertEqual(
             [citation.knowledge_source for citation in citations[:2]],
-            ["enterprise-knowledge-source", "energy-knowledge-source"],
+            ["ai-search-lab-source", "energy-knowledge-source"],
         )
         self.assertEqual(citations[1].supporting_query, "energy supply impacts on project delivery")
         self.assertEqual(citations[1].reference_id, 2)
@@ -322,8 +491,8 @@ class ChatServiceTests(unittest.TestCase):
                     "doc_id": "doc-construction",
                     "chunk_id": "chunk-42",
                     "snippet": "Project teams need stronger document control because permitting packs move faster than manual coordination can absorb.",
-                    "knowledgeSourceName": "enterprise-knowledge-source",
-                    "index_name": "enterprise-knowledge-index",
+                    "knowledgeSourceName": "ai-search-lab-source",
+                    "index_name": "ai-search-lab-index",
                 },
             ]
         }
@@ -332,9 +501,9 @@ class ChatServiceTests(unittest.TestCase):
 
         self.assertEqual(len(citations), 1)
         self.assertEqual(citations[0].chunk_id, "chunk-42")
-        self.assertEqual(citations[0].knowledge_source, "enterprise-knowledge-source")
+        self.assertEqual(citations[0].knowledge_source, "ai-search-lab-source")
 
-    @patch("backend.services.chat.settings.azure_foundry_chat_deployment", new="gpt-5-4")
+    @patch("backend.services.chat.settings.azure_foundry_chat_deployment", new="gpt-5-4-mini-chat")
     @patch("backend.services.chat.settings.azure_foundry_resource_endpoint", new="https://example.cognitiveservices.azure.com/")
     @patch("backend.services.chat.settings.azure_search_enable_answer_synthesis", new=False)
     @patch("backend.services.chat.call_foundry_text")
@@ -363,11 +532,11 @@ class ChatServiceTests(unittest.TestCase):
 
         self.assertIn("[1]", response.answer)
         self.assertEqual(response.diagnostics["mode"], "search_plus_gpt54")
-        self.assertEqual(response.diagnostics["model"], "gpt-5-4")
+        self.assertEqual(response.diagnostics["model"], "gpt-5-4-mini-chat")
         self.assertEqual(len(response.citations), 1)
 
     @patch("backend.services.chat.settings.azure_search_enable_answer_synthesis", new=True)
-    @patch("backend.services.chat.settings.azure_search_llm_deployment", new="gpt-5-mini")
+    @patch("backend.services.chat.settings.azure_search_llm_deployment", new="gpt-5-4-mini-search")
     @patch("backend.services.chat.settings.azure_search_enable_image_serving", new=True)
     def test_synthesizes_grounded_answer_with_search_answer_synthesis_when_enabled(self) -> None:
         retrieval_payload = {
@@ -390,7 +559,7 @@ class ChatServiceTests(unittest.TestCase):
 
         self.assertEqual(response.answer, "Search produced a grounded answer. [1]")
         self.assertEqual(response.diagnostics["mode"], "search_answer_synthesis")
-        self.assertEqual(response.diagnostics["model"], "gpt-5-mini")
+        self.assertEqual(response.diagnostics["model"], "gpt-5-4-mini-search")
         self.assertTrue(response.diagnostics["image_serving_enabled"])
 
     def test_local_preview_chat_respects_selected_corpora(self) -> None:
@@ -500,7 +669,7 @@ class ChatServiceTests(unittest.TestCase):
 
         self.assertEqual(
             [source.knowledge_source_name for source in selected],
-            ["enterprise-knowledge-source", "construction-source", "energy-source"],
+            ["ai-search-lab-source", "construction-source", "energy-source"],
         )
         self.assertTrue(diagnostics["multi_index_routing"])
         self.assertEqual(diagnostics["routing_mode"], "cross_source_intent")
@@ -524,7 +693,7 @@ class ChatServiceTests(unittest.TestCase):
             doc_ids=["doc-a"],
         )
 
-        self.assertEqual([source.knowledge_source_name for source in selected], ["enterprise-knowledge-source"])
+        self.assertEqual([source.knowledge_source_name for source in selected], ["ai-search-lab-source"])
         self.assertFalse(diagnostics["multi_index_routing"])
         self.assertEqual(diagnostics["routing_mode"], "custom_doc_scope")
 
@@ -552,7 +721,7 @@ class ChatServiceTests(unittest.TestCase):
 
         self.assertEqual(
             [item["name"] for item in body["knowledgeSources"]],
-            ["enterprise-knowledge-source", "construction-source", "energy-source"],
+            ["ai-search-lab-source", "construction-source", "energy-source"],
         )
 
     @patch(
@@ -629,7 +798,7 @@ class ChatServiceTests(unittest.TestCase):
         payload = adapter._build_retrieve_payload(
             "Use both corpora",
             [
-                {"knowledgeSourceName": "enterprise-knowledge-source", "kind": "searchIndex"},
+                {"knowledgeSourceName": "ai-search-lab-source", "kind": "searchIndex"},
                 {"knowledgeSourceName": "energy-source", "kind": "searchIndex"},
             ],
         )
@@ -638,13 +807,13 @@ class ChatServiceTests(unittest.TestCase):
         self.assertEqual(len(payload["knowledgeSourceParams"]), 2)
         self.assertEqual(
             payload["knowledgeSourceParams"][0]["knowledgeSourceName"],
-            "enterprise-knowledge-source",
+            "ai-search-lab-source",
         )
         self.assertEqual(payload["knowledgeSourceParams"][1]["knowledgeSourceName"], "energy-source")
 
     @patch("backend.services.indexing.settings.azure_search_api_version", new="2026-05-01-preview")
-    @patch("backend.services.indexing.settings.azure_search_llm_deployment", new="gpt-5-mini")
-    @patch("backend.services.indexing.settings.azure_search_llm_model_name", new="gpt-5-mini")
+    @patch("backend.services.indexing.settings.azure_search_llm_deployment", new="gpt-5-4-mini-search")
+    @patch("backend.services.indexing.settings.azure_search_llm_model_name", new="gpt-5.4-mini")
     @patch("backend.services.indexing.settings.azure_foundry_resource_endpoint", new="https://example.cognitiveservices.azure.com/")
     @patch("backend.services.indexing.settings.azure_search_enable_answer_synthesis", new=True)
     @patch("backend.services.indexing.settings.azure_foundry_api_key", new="test-key")
@@ -654,7 +823,7 @@ class ChatServiceTests(unittest.TestCase):
 
         payload = adapter._build_retrieve_payload(
             "Summarize the visual evidence.",
-            [{"knowledgeSourceName": "enterprise-knowledge-source", "kind": "searchIndex"}],
+            [{"knowledgeSourceName": "ai-search-lab-source", "kind": "searchIndex"}],
         )
 
         self.assertEqual(payload["outputMode"], "answerSynthesis")
@@ -664,8 +833,8 @@ class ChatServiceTests(unittest.TestCase):
         AzureSearchKnowledgeBaseAdapter,
         "_enrichment_knowledge_source",
         return_value=SearchKnowledgeSourceConfig(
-            knowledge_source_name="enterprise-knowledge-enrichment-source-v2",
-            index_name="enterprise-knowledge-enrichment-index-v2",
+            knowledge_source_name="ai-search-lab-enrichment-source",
+            index_name="ai-search-lab-enrichment-index",
             description="Blob-enriched summaries and image descriptions",
             route_keywords=("diagram", "summary", "image"),
         ),
@@ -677,7 +846,7 @@ class ChatServiceTests(unittest.TestCase):
 
         self.assertEqual(
             [source.knowledge_source_name for source in selected],
-            ["enterprise-knowledge-source", "enterprise-knowledge-enrichment-source-v2"],
+            ["ai-search-lab-source", "ai-search-lab-enrichment-source"],
         )
         self.assertTrue(diagnostics["multi_index_routing"])
 
@@ -694,7 +863,7 @@ class ChatServiceTests(unittest.TestCase):
         mock_profile.return_value = SimpleNamespace(
             id="genai_enrichment",
             title="Generative Enrichment",
-            target_index_name="enterprise-knowledge-enrichment-index-v2-genai",
+            target_index_name="ai-search-lab-enrichment-index-genai",
         )
         adapter = AzureSearchKnowledgeBaseAdapter()
 
@@ -702,10 +871,10 @@ class ChatServiceTests(unittest.TestCase):
 
         self.assertIsNotNone(source)
         assert source is not None
-        self.assertEqual(source.index_name, "enterprise-knowledge-enrichment-index-v2-genai")
+        self.assertEqual(source.index_name, "ai-search-lab-enrichment-index-genai")
         self.assertEqual(
             source.knowledge_source_name,
-            "enterprise-knowledge-enrichment-source-v2-genai-enrichment",
+            "ai-search-lab-enrichment-source-genai-enrichment",
         )
 
 

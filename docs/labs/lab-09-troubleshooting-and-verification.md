@@ -58,6 +58,7 @@ Check:
 Check:
 
 - `AZURE_OPENAI_EMBEDDING_DEPLOYMENT`
+- `AZURE_OPENAI_EMBEDDING_MODEL_NAME`
 - canonical index schema contains the vector field
 - the current corpus was uploaded after vector support was enabled
 - the selected corpus is the one you think it is
