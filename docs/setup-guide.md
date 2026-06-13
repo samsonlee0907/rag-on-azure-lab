@@ -12,13 +12,15 @@ Use the workshop README and labs as the primary setup path:
 1. Create a Python environment.
 2. Install dependencies from `requirements.txt`.
 3. Copy `.env.example` to `.env`.
-4. Start the API and static UI with:
+4. Start the API and static UI with the helper script (it loads `.env` into the process environment before launching uvicorn):
 
 ```powershell
-python -m uvicorn backend.app:app --host 127.0.0.1 --port 8016
+.\scripts\run-local-app.ps1 -Port 8016
 ```
 
-5. Open `http://127.0.0.1:8016` or replace `8016` with any free local port you choose.
+> Launching `uvicorn` directly does not read `.env`, so the Azure feature flags stay unset and the app runs in offline/disabled mode. Use the script (or export the variables yourself) for any Azure-backed run.
+
+5. Open `http://127.0.0.1:8016`, or pass a different `-Port` to the script to use any free local port.
 
 ## Recommended Azure Resources
 
@@ -31,7 +33,7 @@ python -m uvicorn backend.app:app --host 127.0.0.1 --port 8016
 ## Demo Flow
 
 1. Pick one representative PDF and keep it for the full workshop.
-2. Run Labs 03 through 06 by changing only `WORKSHOP_SKILL_PROFILE`.
+2. Run Labs 03 through 06 by choosing each lab's profile in the in-app **Skill Profile** picker at upload time.
 3. Re-upload the same document per lab so each Search-managed enrichment profile gets its own comparison index.
 4. Compare `full_text`, `vector`, and `hybrid` exactly where the lab tells you to do so.
 5. Run Lab 07 last in the core sequence to show official agentic retrieval over the best corpus.

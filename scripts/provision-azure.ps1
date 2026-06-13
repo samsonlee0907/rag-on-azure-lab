@@ -96,7 +96,10 @@ param(
     [string]$EmbeddingDeploymentName = "text-embedding-3-large-vector",
 
     [Parameter(Mandatory = $false)]
-    [int]$EmbeddingDeploymentCapacity = 100
+    [int]$EmbeddingDeploymentCapacity = 100,
+
+    [Parameter(Mandatory = $false)]
+    [string]$EnvFilePath = ""
 )
 
 Set-StrictMode -Version Latest
@@ -132,12 +135,21 @@ function Ensure-Name {
 function Invoke-Az {
     param(
         [Parameter(Mandatory = $true)]
-        [string[]]$Arguments
+        [string[]]$Arguments,
+        [switch]$AllowFailure
     )
 
     Write-Host ">> az $($Arguments -join ' ')" -ForegroundColor Cyan
-    $raw = & az @Arguments
+    if ($AllowFailure) {
+        $raw = & az @Arguments 2>$null
+    }
+    else {
+        $raw = & az @Arguments
+    }
     if ($LASTEXITCODE -ne 0) {
+        if ($AllowFailure) {
+            return $null
+        }
         throw "Azure CLI command failed: az $($Arguments -join ' ')"
     }
     return $raw
@@ -146,10 +158,11 @@ function Invoke-Az {
 function Invoke-AzJson {
     param(
         [Parameter(Mandatory = $true)]
-        [string[]]$Arguments
+        [string[]]$Arguments,
+        [switch]$AllowFailure
     )
 
-    $raw = Invoke-Az -Arguments $Arguments
+    $raw = Invoke-Az -Arguments $Arguments -AllowFailure:$AllowFailure
     if ([string]::IsNullOrWhiteSpace($raw)) {
         return $null
     }
@@ -257,6 +270,32 @@ function Ensure-FoundryProject {
     )
 
     Enable-FoundryProjectManagement -TargetResourceGroup $TargetResourceGroup -TargetFoundryName $TargetFoundryName
+
+    # Wait for allowProjectManagement to actually propagate on the account before
+    # creating the project. The PATCH returns before the flag is queryable, so poll.
+    $accountUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$TargetResourceGroup/providers/Microsoft.CognitiveServices/accounts/${TargetFoundryName}?api-version=2025-06-01"
+    $managementReady = $false
+    for ($attempt = 1; $attempt -le 12; $attempt++) {
+        $account = Invoke-AzJson -Arguments @("rest", "--method", "GET", "--uri", $accountUri, "--output", "json")
+        $flag = $null
+        if ($account -and $account.properties) {
+            $flag = $account.properties.allowProjectManagement
+        }
+        if ($flag -eq $true) {
+            $managementReady = $true
+            break
+        }
+        Write-Host "Waiting for Foundry project management to enable (attempt $attempt)..." -ForegroundColor DarkYellow
+        # Re-issue the PATCH on later attempts in case the first one did not stick.
+        if ($attempt -ge 3) {
+            Enable-FoundryProjectManagement -TargetResourceGroup $TargetResourceGroup -TargetFoundryName $TargetFoundryName
+        }
+        Start-Sleep -Seconds 15
+    }
+    if (-not $managementReady) {
+        throw "Foundry account '$TargetFoundryName' did not report allowProjectManagement=true after waiting. Re-run the script."
+    }
+
     $projectUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$TargetResourceGroup/providers/Microsoft.CognitiveServices/accounts/${TargetFoundryName}/projects/${FoundryProjectName}?api-version=2025-06-01"
     $projectBody = @{
         location = $Location
@@ -272,14 +311,30 @@ function Ensure-FoundryProject {
     $bodyPath = New-TemporaryFile
     try {
         Set-Content -LiteralPath $bodyPath.FullName -Value $projectBody -Encoding utf8NoBOM
-        Invoke-Az -Arguments @(
-            "rest",
-            "--method", "PUT",
-            "--uri", $projectUri,
-            "--headers", "Content-Type=application/json",
-            "--body", "@$($bodyPath.FullName)",
-            "--output", "none"
-        ) | Out-Null
+        $projectCreated = $false
+        $lastError = $null
+        for ($attempt = 1; $attempt -le 6; $attempt++) {
+            try {
+                Invoke-Az -Arguments @(
+                    "rest",
+                    "--method", "PUT",
+                    "--uri", $projectUri,
+                    "--headers", "Content-Type=application/json",
+                    "--body", "@$($bodyPath.FullName)",
+                    "--output", "none"
+                ) | Out-Null
+                $projectCreated = $true
+                break
+            }
+            catch {
+                $lastError = $_
+                Write-Host "Project creation attempt $attempt failed, retrying in 15s..." -ForegroundColor DarkYellow
+                Start-Sleep -Seconds 15
+            }
+        }
+        if (-not $projectCreated) {
+            throw "Failed to create Foundry project after multiple attempts. Last error: $lastError"
+        }
     }
     finally {
         Remove-Item -LiteralPath $bodyPath.FullName -Force -ErrorAction SilentlyContinue
@@ -380,17 +435,23 @@ $searchShow = Invoke-AzJson -Arguments @(
 $searchPrincipalId = $searchShow.identity.principalId
 
 Write-Host "Creating Document Intelligence resource..." -ForegroundColor Yellow
-Invoke-Az -Arguments @(
-    "cognitiveservices", "account", "create",
-    "--name", $DocumentIntelligenceName,
-    "--resource-group", $ResourceGroupName,
-    "--location", $Location,
-    "--kind", "FormRecognizer",
-    "--sku", "S0",
-    "--custom-domain", $DocumentIntelligenceName,
-    "--yes",
-    "--output", "none"
-) | Out-Null
+$existingDocInt = Invoke-AzJson -Arguments @("cognitiveservices", "account", "show", "--name", $DocumentIntelligenceName, "--resource-group", $ResourceGroupName, "--output", "json") -AllowFailure
+if ($existingDocInt) {
+    Write-Host "Document Intelligence resource '$DocumentIntelligenceName' already exists, reusing it." -ForegroundColor DarkYellow
+}
+else {
+    Invoke-Az -Arguments @(
+        "cognitiveservices", "account", "create",
+        "--name", $DocumentIntelligenceName,
+        "--resource-group", $ResourceGroupName,
+        "--location", $Location,
+        "--kind", "FormRecognizer",
+        "--sku", "S0",
+        "--custom-domain", $DocumentIntelligenceName,
+        "--yes",
+        "--output", "none"
+    ) | Out-Null
+}
 
 if ($ExistingFoundryResourceName) {
     $resolvedFoundryResourceGroup = $ExistingFoundryResourceGroup
@@ -401,18 +462,24 @@ else {
     $resolvedFoundryResourceGroup = $ResourceGroupName
     $resolvedFoundryResourceName = $FoundryResourceName
     Write-Host "Creating Foundry resource..." -ForegroundColor Yellow
-    Invoke-Az -Arguments @(
-        "cognitiveservices", "account", "create",
-        "--name", $resolvedFoundryResourceName,
-        "--resource-group", $resolvedFoundryResourceGroup,
-        "--location", $Location,
-        "--kind", "AIServices",
-        "--sku", "S0",
-        "--custom-domain", $resolvedFoundryResourceName,
-        "--assign-identity",
-        "--yes",
-        "--output", "none"
-    ) | Out-Null
+    $existingFoundry = Invoke-AzJson -Arguments @("cognitiveservices", "account", "show", "--name", $resolvedFoundryResourceName, "--resource-group", $resolvedFoundryResourceGroup, "--output", "json") -AllowFailure
+    if ($existingFoundry) {
+        Write-Host "Foundry resource '$resolvedFoundryResourceName' already exists, reusing it." -ForegroundColor DarkYellow
+    }
+    else {
+        Invoke-Az -Arguments @(
+            "cognitiveservices", "account", "create",
+            "--name", $resolvedFoundryResourceName,
+            "--resource-group", $resolvedFoundryResourceGroup,
+            "--location", $Location,
+            "--kind", "AIServices",
+            "--sku", "S0",
+            "--custom-domain", $resolvedFoundryResourceName,
+            "--assign-identity",
+            "--yes",
+            "--output", "none"
+        ) | Out-Null
+    }
 }
 
 if ($CreateFoundryProject) {
@@ -423,73 +490,65 @@ if ($CreateFoundryProject) {
 if ($CreateOptionalModelDeployments) {
     Write-Host "Creating optional Foundry model deployments..." -ForegroundColor Yellow
 
+    function New-FoundryModelDeployment {
+        param(
+            [Parameter(Mandatory = $true)] [string]$DeploymentName,
+            [Parameter(Mandatory = $true)] [string]$ModelName,
+            [Parameter(Mandatory = $true)] [string]$ModelVersion,
+            [Parameter(Mandatory = $true)] [string]$SkuName,
+            [Parameter(Mandatory = $true)] [int]$Capacity
+        )
+
+        for ($attempt = 1; $attempt -le 8; $attempt++) {
+            try {
+                Invoke-Az -Arguments @(
+                    "cognitiveservices", "account", "deployment", "create",
+                    "--resource-group", $resolvedFoundryResourceGroup,
+                    "--name", $resolvedFoundryResourceName,
+                    "--deployment-name", $DeploymentName,
+                    "--model-format", "OpenAI",
+                    "--model-name", $ModelName,
+                    "--model-version", $ModelVersion,
+                    "--sku-name", $SkuName,
+                    "--sku-capacity", "$Capacity",
+                    "--output", "none"
+                ) | Out-Null
+                Write-Host "Deployment '$DeploymentName' is ready." -ForegroundColor Green
+                return
+            }
+            catch {
+                if ($attempt -eq 8) {
+                    throw
+                }
+                Write-Host "Deployment '$DeploymentName' attempt $attempt hit a conflict/transient error, retrying in 20s..." -ForegroundColor DarkYellow
+                Start-Sleep -Seconds 20
+            }
+        }
+    }
+
     if ($ChatModelVersion) {
-        Invoke-Az -Arguments @(
-            "cognitiveservices", "account", "deployment", "create",
-            "--resource-group", $resolvedFoundryResourceGroup,
-            "--name", $resolvedFoundryResourceName,
-            "--deployment-name", $ChatDeploymentName,
-            "--model-format", "OpenAI",
-            "--model-name", $ChatModelName,
-            "--model-version", $ChatModelVersion,
-            "--sku-name", "GlobalStandard",
-            "--sku-capacity", "$ChatDeploymentCapacity",
-            "--output", "none"
-        ) | Out-Null
+        New-FoundryModelDeployment -DeploymentName $ChatDeploymentName -ModelName $ChatModelName -ModelVersion $ChatModelVersion -SkuName "GlobalStandard" -Capacity $ChatDeploymentCapacity
     }
     else {
         Write-Warning "Skipping chat model deployment because ChatModelVersion was not provided."
     }
 
     if ($PlanningModelVersion) {
-        Invoke-Az -Arguments @(
-            "cognitiveservices", "account", "deployment", "create",
-            "--resource-group", $resolvedFoundryResourceGroup,
-            "--name", $resolvedFoundryResourceName,
-            "--deployment-name", $PlanningDeploymentName,
-            "--model-format", "OpenAI",
-            "--model-name", $PlanningModelName,
-            "--model-version", $PlanningModelVersion,
-            "--sku-name", "GlobalStandard",
-            "--sku-capacity", "$PlanningDeploymentCapacity",
-            "--output", "none"
-        ) | Out-Null
+        New-FoundryModelDeployment -DeploymentName $PlanningDeploymentName -ModelName $PlanningModelName -ModelVersion $PlanningModelVersion -SkuName "GlobalStandard" -Capacity $PlanningDeploymentCapacity
     }
     else {
         Write-Warning "Skipping planning model deployment because PlanningModelVersion was not provided."
     }
 
     if ($EmbeddingModelVersion) {
-        Invoke-Az -Arguments @(
-            "cognitiveservices", "account", "deployment", "create",
-            "--resource-group", $resolvedFoundryResourceGroup,
-            "--name", $resolvedFoundryResourceName,
-            "--deployment-name", $EmbeddingDeploymentName,
-            "--model-format", "OpenAI",
-            "--model-name", $EmbeddingModelName,
-            "--model-version", $EmbeddingModelVersion,
-            "--sku-name", "Standard",
-            "--sku-capacity", "$EmbeddingDeploymentCapacity",
-            "--output", "none"
-        ) | Out-Null
+        New-FoundryModelDeployment -DeploymentName $EmbeddingDeploymentName -ModelName $EmbeddingModelName -ModelVersion $EmbeddingModelVersion -SkuName "Standard" -Capacity $EmbeddingDeploymentCapacity
     }
     else {
         Write-Warning "Skipping embedding model deployment because EmbeddingModelVersion was not provided."
     }
 
     if ($NativeChatModelVersion) {
-        Invoke-Az -Arguments @(
-            "cognitiveservices", "account", "deployment", "create",
-            "--resource-group", $resolvedFoundryResourceGroup,
-            "--name", $resolvedFoundryResourceName,
-            "--deployment-name", $NativeChatDeploymentName,
-            "--model-format", "OpenAI",
-            "--model-name", $NativeChatModelName,
-            "--model-version", $NativeChatModelVersion,
-            "--sku-name", "GlobalStandard",
-            "--sku-capacity", "$NativeChatDeploymentCapacity",
-            "--output", "none"
-        ) | Out-Null
+        New-FoundryModelDeployment -DeploymentName $NativeChatDeploymentName -ModelName $NativeChatModelName -ModelVersion $NativeChatModelVersion -SkuName "GlobalStandard" -Capacity $NativeChatDeploymentCapacity
     }
     else {
         Write-Warning "Skipping native multimodal chat model deployment because NativeChatModelVersion was not provided."
@@ -670,3 +729,15 @@ $output = [ordered]@{
 Write-Host ""
 Write-Host "Provisioning complete. Use these values in .env:" -ForegroundColor Green
 $output | ConvertTo-Json -Depth 10
+
+if ($EnvFilePath) {
+    Write-Host ""
+    Write-Host "Writing .env file to $EnvFilePath ..." -ForegroundColor Yellow
+    $envLines = foreach ($entry in $output.env.GetEnumerator()) {
+        $value = if ($null -eq $entry.Value) { "" } else { [string]$entry.Value }
+        "$($entry.Key)=$value"
+    }
+    $envContent = ($envLines -join [Environment]::NewLine) + [Environment]::NewLine
+    Set-Content -LiteralPath $EnvFilePath -Value $envContent -Encoding utf8NoBOM
+    Write-Host "Wrote $($output.env.Count) settings to $EnvFilePath" -ForegroundColor Green
+}

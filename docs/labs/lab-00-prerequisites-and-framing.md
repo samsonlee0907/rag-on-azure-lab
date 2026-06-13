@@ -132,7 +132,7 @@ publish_status = adapter.publish(
 
 | Variable | What it controls | Good workshop default |
 | --- | --- | --- |
-| `WORKSHOP_SKILL_PROFILE` | Which enrichment lab is active. | Start with `baseline_extract`. |
+| `WORKSHOP_SKILL_PROFILE` | Default selection of the in-app **Skill Profile** picker. | Start with `baseline_extract`. |
 | `DEFAULT_INGESTION_MODE` | Whether uploads go through the Blob + skillset path. | Keep `hybrid_blob_skillset`. |
 | `WORKSHOP_STRICT_MODE` | Whether broken Azure steps fail fast instead of silently downgrading. | Keep `true` for workshops. |
 

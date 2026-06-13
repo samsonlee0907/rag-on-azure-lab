@@ -6,6 +6,8 @@ Switch from direct search modes to the official Azure AI Search knowledge-base r
 
 This lab does **not** introduce a new ingestion profile. It uses the best corpus produced in Labs 05 or 06 and changes the retrieval method to `Agentic retrieval`.
 
+> Preview feature. Knowledge sources, knowledge bases, and the `retrieve` action are preview capabilities in Azure AI Search and run on a preview REST API version. They are provided without an SLA and are not recommended for production workloads. Treat this lab as a forward-looking capability demo. Internally, agentic retrieval runs each subquery as a hybrid query and reranks it with the semantic ranker, so the same semantic ranker availability and billing caveats from Lab 04 apply here too. Azure AI Search bills agentic retrieval by retrieval tokens, and the planning and answer-synthesis LLM calls are billed separately on Azure OpenAI.
+
 ## Questions This Lab Answers
 
 - What makes retrieval “agentic” instead of just “hybrid plus an LLM”?
@@ -121,6 +123,7 @@ payload = {
 - use agentic retrieval for decomposition, source routing, and multi-part questions
 - keep retrieval activity visible so planning stays inspectable
 - compare agentic and hybrid on the same prompt to show what planning actually changes
+- remember that lower `retrievalReasoningEffort` and fewer knowledge sources reduce both latency and token cost
 
 ## Files To Inspect
 

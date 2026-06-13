@@ -17,26 +17,26 @@ Then use `Hybrid` search as the main comparison mode.
 - How do I keep generated metadata from replacing or distorting source text?
 - Which kinds of questions benefit most from generated retrieval cues?
 
-Set:
+This lab uses the **Generative Enrichment** skill profile, selected per upload from the UI.
 
-```dotenv
-WORKSHOP_SKILL_PROFILE=genai_enrichment
+## Step 1 - Start the app
+
+Launch through the helper script if it is not already running:
+
+```powershell
+.\scripts\run-local-app.ps1 -Port 8016
 ```
 
-## Step 1 - Restart the app
-
-Restart after changing `.env`.
-
-## Step 2 - Verify the active profile
+## Step 2 - Confirm the profile is available
 
 Open [http://127.0.0.1:8016/api/workshop/profiles](http://127.0.0.1:8016/api/workshop/profiles) and confirm:
 
-- `active_profile_id` is `genai_enrichment`
-- the target enrichment index name ends with `-genai`
+- `genai_enrichment` appears in the `profiles` list
+- its target enrichment index name ends with `-genai`
 
 ## Step 3 - Upload the same document again
 
-Keep the source constant.
+Keep the source constant. On the upload screen, set the **Skill Profile** picker to **Generative Enrichment** before submitting.
 
 ## Step 4 - Use `Hybrid` retrieval mode
 
@@ -45,6 +45,8 @@ In the chat UI:
 1. use `Custom Selection`
 2. pick the newly uploaded `genai_enrichment` corpus
 3. set retrieval mode to `Hybrid`
+
+> **Where the enrichment surfaces.** `Hybrid`, `Vector`, and `Full text` are *direct* modes that query the canonical knowledge-base index (`AZURE_SEARCH_INDEX_NAME`). The Search-managed enrichment index this profile builds (`...-genai`) is consumed by **Agentic retrieval**, which fans out across both the canonical and enrichment sources. The app pipeline copies generated summaries onto canonical chunks (so they can appear in `Hybrid`), but to see the full effect of the skillset enrichment, run the same question in **Agentic** mode and compare.
 
 ## Step 5 - Ask the comparison prompts
 

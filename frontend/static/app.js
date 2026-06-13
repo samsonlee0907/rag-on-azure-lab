@@ -8,6 +8,8 @@ const state = {
   selectedCorpusDocIds: [],
   config: {},
   ingestionMode: "hybrid_blob_skillset",
+  skillProfile: null,
+  profiles: [],
 };
 
 async function fetchJson(url, options = {}) {
@@ -301,6 +303,41 @@ function clearGenerationStatus() {
 
 function getSelectedIngestionMode() {
   return $("#ingestion-mode-select")?.value || state.ingestionMode || state.config.default_ingestion_mode || "hybrid_blob_skillset";
+}
+
+function getSelectedSkillProfile() {
+  return $("#skill-profile-select")?.value || state.skillProfile || "";
+}
+
+async function refreshWorkshopProfiles() {
+  const select = $("#skill-profile-select");
+  if (!select) return;
+  try {
+    const payload = await fetchJson("/api/workshop/profiles");
+    state.profiles = payload.profiles || [];
+    if (!state.skillProfile) {
+      state.skillProfile = payload.active_profile_id || (state.profiles[0] && state.profiles[0].id) || "";
+    }
+    select.innerHTML = state.profiles
+      .map((profile) => `<option value="${profile.id}">${escapeHtml(profile.title)}</option>`)
+      .join("");
+    syncSkillProfileControl();
+  } catch (error) {
+    select.innerHTML = `<option value="">Profiles unavailable</option>`;
+  }
+}
+
+function syncSkillProfileControl() {
+  const select = $("#skill-profile-select");
+  const caption = $("#skill-profile-caption");
+  if (!select) return;
+  if (state.skillProfile) {
+    select.value = state.skillProfile;
+  }
+  const active = state.profiles.find((profile) => profile.id === select.value);
+  if (caption && active) {
+    caption.textContent = `${active.description} The profile only takes effect in hybrid mode.`;
+  }
 }
 
 function syncIngestionModeControl() {
@@ -967,17 +1004,27 @@ async function handleUpload(event) {
   const file = $("#upload-input").files[0];
   if (!file) return;
   const ingestionMode = getSelectedIngestionMode();
+  const skillProfile = getSelectedSkillProfile();
   const formData = new FormData();
   formData.append("file", file);
   formData.append("ingestion_mode", ingestionMode);
-  setGenerationStatus("running", `Uploading ${file.name} and queuing it for ingestion in ${ingestionMode} mode...`);
+  if (skillProfile) {
+    formData.append("skill_profile", skillProfile);
+  }
+  setGenerationStatus(
+    "running",
+    `Uploading ${file.name} and queuing it for ingestion in ${ingestionMode} mode${skillProfile ? ` with the ${skillProfile} profile` : ""}...`
+  );
   try {
     await fetchJson("/api/documents/upload", { method: "POST", body: formData });
     $("#upload-form").reset();
     await refreshDashboard();
     await refreshDocuments();
     await refreshKnowledge();
-    setGenerationStatus("success", `${file.name} was uploaded and queued for ingestion in ${ingestionMode} mode.`);
+    setGenerationStatus(
+      "success",
+      `${file.name} was uploaded and queued for ingestion in ${ingestionMode} mode${skillProfile ? ` with the ${skillProfile} profile` : ""}.`
+    );
   } catch (error) {
     setGenerationStatus("error", error.message || "Document upload failed.");
   }
@@ -994,7 +1041,7 @@ async function handleGenerateRandomResearch() {
   );
   try {
     const payload = await fetchJson(
-      `/api/samples/random-research-corpus?ingestion_mode=${encodeURIComponent(ingestionMode)}`,
+      `/api/samples/random-research-corpus?ingestion_mode=${encodeURIComponent(ingestionMode)}&skill_profile=${encodeURIComponent(getSelectedSkillProfile())}`,
       { method: "POST", timeoutMs: 120000 }
     );
     state.selectedDocId = payload.job.doc_id;
@@ -1025,7 +1072,7 @@ async function handleGenerateFuturesReport() {
   );
   try {
     const payload = await fetchJson(
-      `/api/samples/generative-ai-futures-report?ingestion_mode=${encodeURIComponent(ingestionMode)}`,
+      `/api/samples/generative-ai-futures-report?ingestion_mode=${encodeURIComponent(ingestionMode)}&skill_profile=${encodeURIComponent(getSelectedSkillProfile())}`,
       { method: "POST", timeoutMs: 120000 }
     );
     state.selectedDocId = payload.job.doc_id;
@@ -1055,7 +1102,7 @@ async function handleGenerateConstructionReport() {
   );
   try {
     const payload = await fetchJson(
-      `/api/samples/construction-industry-report?ingestion_mode=${encodeURIComponent(ingestionMode)}`,
+      `/api/samples/construction-industry-report?ingestion_mode=${encodeURIComponent(ingestionMode)}&skill_profile=${encodeURIComponent(getSelectedSkillProfile())}`,
       {
         method: "POST",
         timeoutMs: 120000,
@@ -1205,10 +1252,14 @@ async function bootstrap() {
     state.ingestionMode = event.target.value;
     syncIngestionModeControl();
   });
+  $("#skill-profile-select").addEventListener("change", (event) => {
+    state.skillProfile = event.target.value;
+    syncSkillProfileControl();
+  });
   $("#upload-form").addEventListener("submit", handleUpload);
   $("#chat-form").addEventListener("submit", handleChat);
 
-  await Promise.all([refreshConfig(), refreshDashboard(), refreshDocuments(), refreshKnowledge()]);
+  await Promise.all([refreshConfig(), refreshWorkshopProfiles(), refreshDashboard(), refreshDocuments(), refreshKnowledge()]);
   renderChatScopeControls();
   syncRetrievalModeControl();
 }

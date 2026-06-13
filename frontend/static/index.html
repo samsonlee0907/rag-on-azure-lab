@@ -74,6 +74,15 @@
                 Hybrid mode uploads the file to Azure Blob, runs Azure AI Search skillset enrichment, and then merges those outputs back into the app-managed retrieval corpus.
               </div>
             </div>
+            <div class="mode-picker-row">
+              <label class="mode-select">
+                <span>Skill Profile</span>
+                <select id="skill-profile-select"></select>
+              </label>
+              <div id="skill-profile-caption" class="muted small">
+                Choose which Azure AI Search enrichment profile this document is indexed with. The profile only takes effect in hybrid mode.
+              </div>
+            </div>
             <form id="upload-form" class="upload-form">
               <label class="file-drop">
                 <span>Select a local file for ingestion</span>

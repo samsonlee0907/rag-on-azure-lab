@@ -16,6 +16,7 @@ from backend.services.native_multimodal_search import NativeMultimodalSnapshot, 
 from backend.services.normalization import normalize_document
 from backend.services.parsers import parser_registry
 from backend.services.search_skillset_enrichment import SearchSkillsetEnrichmentSnapshot, blob_skillset_enrichment
+from backend.services.workshop_profiles import get_workshop_skill_profile
 
 logger = logging.getLogger(__name__)
 MAX_DIRECT_CHUNK_IMAGE_PAGE_SPAN = 12
@@ -37,6 +38,7 @@ class IngestionPipeline:
         background_tasks: BackgroundTasks,
         *,
         ingestion_mode: str | None = None,
+        skill_profile: str | None = None,
     ) -> JobRecord:
         file_name = file.filename or "upload.bin"
         temp_record = JobRecord(file_name=file_name, stored_path="")
@@ -51,6 +53,7 @@ class IngestionPipeline:
             file_name=file_name,
             activity_message="File uploaded and queued for ingestion.",
             ingestion_mode=ingestion_mode,
+            skill_profile=skill_profile,
             source_kind="upload",
         )
 
@@ -63,12 +66,14 @@ class IngestionPipeline:
         file_name: str | None = None,
         activity_message: str = "Document queued for ingestion.",
         ingestion_mode: str | None = None,
+        skill_profile: str | None = None,
         source_kind: str = "upload",
     ) -> JobRecord:
         resolved_file_name = file_name or path.name
         temp_record = JobRecord(file_name=resolved_file_name, stored_path="")
         resolved_doc_id = doc_id or temp_record.doc_id
         resolved_ingestion_mode = self._normalize_ingestion_mode(ingestion_mode)
+        resolved_profile = get_workshop_skill_profile(skill_profile)
         profile = parser_registry.detect(path)
         job = JobRecord(
             doc_id=resolved_doc_id,
@@ -84,13 +89,17 @@ class IngestionPipeline:
             progress=5,
             stage=Stage.uploaded,
             ingestion_mode=resolved_ingestion_mode,
+            skill_profile_id=resolved_profile.id,
             source_kind=source_kind,
         )
         job.activity.append(
             PipelineMessage(
                 timestamp=job.created_at,
                 level="info",
-                message=f"{activity_message} Ingestion mode: {resolved_ingestion_mode}.",
+                message=(
+                    f"{activity_message} Ingestion mode: {resolved_ingestion_mode}. "
+                    f"Skill profile: {resolved_profile.id}."
+                ),
             )
         )
         job_store.upsert(job)
@@ -179,6 +188,7 @@ class IngestionPipeline:
                     source_name=intermediate.source_name,
                     intermediate=intermediate,
                     chunks=chunks,
+                    profile=get_workshop_skill_profile(job.skill_profile_id),
                 )
                 job_store.mutate(
                     doc_id,

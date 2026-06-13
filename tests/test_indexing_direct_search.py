@@ -28,8 +28,8 @@ class DirectSearchBodyTests(unittest.TestCase):
         self.assertEqual(body["search"], "find the workflow")
         self.assertEqual(body["filter"], "doc_id eq 'abc'")
         self.assertNotIn("vectorQueries", body)
-        self.assertEqual(body["captions"], "extractive|highlight-false")
-        self.assertEqual(body["queryType"], "semantic")
+        self.assertNotIn("captions", body)
+        self.assertNotIn("queryType", body)
 
     def test_build_vector_body_uses_star_and_vector_queries(self) -> None:
         body = self.adapter._build_direct_search_body(

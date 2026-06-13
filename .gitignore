@@ -15,6 +15,7 @@ data/uploads/*
 data/artifacts/*
 !data/artifacts/.gitkeep
 data/job_store.json
+data/*.pdf
 
 server-live.stdout.log
 server-live.stderr.log

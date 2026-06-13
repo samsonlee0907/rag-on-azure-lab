@@ -356,6 +356,14 @@ class Settings:
         )
 
     @property
+    def azure_content_understanding_skill_available(self) -> bool:
+        # The GA Search `#Microsoft.Skills.Util.ContentUnderstandingSkill` is
+        # resource-attached: it binds to the billable Foundry resource declared in the
+        # skillset's `cognitiveServices` block (managed identity preferred, key fallback),
+        # so it needs no standalone Content Understanding endpoint/key/analyzer.
+        return bool(self.azure_foundry_resource_endpoint or self.azure_foundry_api_key)
+
+    @property
     def azure_search_enabled(self) -> bool:
         return bool(self.azure_search_endpoint and self.azure_search_key)
 

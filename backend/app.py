@@ -29,7 +29,6 @@ from backend.services.sample_documents import (
     create_random_research_corpus,
 )
 from backend.services.workshop_profiles import build_workshop_profile_summary, build_workshop_skill_profiles
-from backend.services.workshop_profiles import get_workshop_skill_profile
 
 configure_logging(settings.log_level)
 
@@ -93,6 +92,7 @@ def _job_workshop_profile_id(job: JobRecord) -> str:
         search_objects.get("workshop_profile_id")
         or (workshop_profile.get("id") if isinstance(workshop_profile, dict) else None)
         or extracted_fields.get("skill_profile_id")
+        or job.skill_profile_id
         or "untracked"
     )
 
@@ -107,10 +107,16 @@ def _job_corpus_label(job: JobRecord) -> str:
 
 
 def _available_retrieval_modes() -> list[str]:
-    profile = get_workshop_skill_profile()
-    ordered = list(profile.recommended_retrieval_modes) or ["full_text"]
-    if "agentic" not in ordered:
-        ordered.append("agentic")
+    # Profiles are now chosen per document at upload time, so the chat surface
+    # offers the full union of retrieval modes recommended by any profile.
+    ordered: list[str] = []
+    for profile in build_workshop_skill_profiles():
+        for mode in profile.recommended_retrieval_modes:
+            if mode not in ordered:
+                ordered.append(mode)
+    for fallback in ("full_text", "vector", "hybrid", "agentic"):
+        if fallback not in ordered:
+            ordered.append(fallback)
     if settings.azure_search_native_multimodal_enabled and "native_multimodal" not in ordered:
         ordered.append("native_multimodal")
     return ordered
@@ -238,8 +244,14 @@ async def upload_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     ingestion_mode: str = Form(settings.default_ingestion_mode),
+    skill_profile: str | None = Form(None),
 ) -> dict[str, object]:
-    job = await pipeline.create_job(file, background_tasks, ingestion_mode=ingestion_mode)
+    job = await pipeline.create_job(
+        file,
+        background_tasks,
+        ingestion_mode=ingestion_mode,
+        skill_profile=skill_profile,
+    )
     return job.model_dump(mode="json")
 
 
@@ -249,6 +261,7 @@ def create_random_research_sample(
     page_count: int = settings.hard_page_split_threshold + 5,
     topic: str | None = None,
     ingestion_mode: str = settings.default_ingestion_mode,
+    skill_profile: str | None = None,
 ) -> dict[str, object]:
     if page_count <= settings.hard_page_split_threshold:
         raise HTTPException(
@@ -267,6 +280,7 @@ def create_random_research_sample(
             f"Generated {sample.page_count}-page research corpus on {sample.report_title or 'a random topic'} and queued it for segmented ingestion."
         ),
         ingestion_mode=ingestion_mode,
+        skill_profile=skill_profile,
         source_kind="generated_sample",
     )
     return {
@@ -284,7 +298,10 @@ def create_random_research_sample(
 
 @app.post("/api/samples/generative-ai-futures-report")
 def create_generative_ai_futures_sample(
-    background_tasks: BackgroundTasks, page_count: int = 520, ingestion_mode: str = settings.default_ingestion_mode
+    background_tasks: BackgroundTasks,
+    page_count: int = 520,
+    ingestion_mode: str = settings.default_ingestion_mode,
+    skill_profile: str | None = None,
 ) -> dict[str, object]:
     if page_count <= 500:
         raise HTTPException(status_code=400, detail="page_count must be greater than 500.")
@@ -297,6 +314,7 @@ def create_generative_ai_futures_sample(
             f"Generated {sample.page_count}-page futures report with diagrams and queued it for ingestion."
         ),
         ingestion_mode=ingestion_mode,
+        skill_profile=skill_profile,
         source_kind="generated_sample",
     )
     return {
@@ -312,7 +330,10 @@ def create_generative_ai_futures_sample(
 
 @app.post("/api/samples/construction-industry-report")
 def create_construction_industry_sample(
-    background_tasks: BackgroundTasks, page_count: int = 540, ingestion_mode: str = settings.default_ingestion_mode
+    background_tasks: BackgroundTasks,
+    page_count: int = 540,
+    ingestion_mode: str = settings.default_ingestion_mode,
+    skill_profile: str | None = None,
 ) -> dict[str, object]:
     if page_count <= 500:
         raise HTTPException(status_code=400, detail="page_count must be greater than 500.")
@@ -325,6 +346,7 @@ def create_construction_industry_sample(
             f"Generated {sample.page_count}-page construction report with architecture diagrams and queued it for ingestion."
         ),
         ingestion_mode=ingestion_mode,
+        skill_profile=skill_profile,
         source_kind="generated_sample",
     )
     return {
@@ -540,8 +562,8 @@ def chat(request: ChatTurnRequest) -> ChatTurnResponse:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Retrieval mode '{requested_retrieval_mode}' is not enabled for the active workshop profile "
-                f"'{settings.workshop_skill_profile}'. Allowed modes: {', '.join(sorted(allowed_modes))}."
+                f"Retrieval mode '{requested_retrieval_mode}' is not available. "
+                f"Allowed modes: {', '.join(sorted(allowed_modes))}."
             ),
         )
     use_native_multimodal = requested_retrieval_mode == "native_multimodal"

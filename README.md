@@ -101,11 +101,12 @@ These are the core Azure AI Search objects you need to understand for the worksh
 | --- | --- | --- |
 | Blob container | Where the original source documents live | The Search indexer reads uploaded documents from `documents` |
 | Data source | The Search connection to Blob | Points the indexer at the workshop Blob container |
-| Skillset | The enrichment pipeline Azure AI Search runs during indexing | Changes by lab through `WORKSHOP_SKILL_PROFILE` |
+| Skillset | The enrichment pipeline Azure AI Search runs during indexing | Chosen per upload with the **Skill Profile** picker (defaults to `WORKSHOP_SKILL_PROFILE`) |
 | Indexer | The job that reads from the data source, runs the skillset, and writes to an index | Runs the Blob + skillset lane |
 | Index | The searchable store | The workshop uses a canonical chunk index and a profile-specific enrichment index |
-| Knowledge source | A retrieval source used by agentic retrieval | Usually points at a Search index |
-| Knowledge base | The object queried by agentic retrieval | Used in Lab 07 and later |
+| Semantic configuration | Per-index settings that tell the semantic ranker which title, content, and keyword fields to rerank on | `default-semantic-config` powers `hybrid` reranking, captions, and agentic reranking |
+| Knowledge source | A retrieval source used by agentic retrieval (preview) | Usually points at a Search index |
+| Knowledge base | The object queried by agentic retrieval (preview) | Used in Lab 07 and later |
 
 The workshop is easier to follow if you keep this separation in mind:
 
@@ -116,17 +117,20 @@ The workshop is easier to follow if you keep this separation in mind:
 
 The chat UI exposes four retrieval modes.
 
-| Mode | Azure AI Search surface | What it demonstrates | How this repo uses it |
-| --- | --- | --- | --- |
-| `full_text` | Direct `docs/search` query over the canonical index | lexical relevance, exact terms, BM25-style matching | Best baseline after `DocumentExtractionSkill` |
-| `vector` | Direct `docs/search` with `vectorQueries` | semantic similarity and paraphrase handling | Enabled once chunk embeddings exist |
-| `hybrid` | Direct `docs/search` with both `search` and `vectorQueries` | combined lexical + semantic recall | Best direct-search comparison track |
-| `agentic` | Knowledge base `retrieve` action | query planning, subqueries, source selection, grounded synthesis | Final official retrieval feature in the workshop |
+| Mode | Azure AI Search surface | Ranking | What it demonstrates | How this repo uses it |
+| --- | --- | --- | --- | --- |
+| `full_text` | Direct `docs/search` query over the canonical index | BM25 only | lexical relevance, exact terms, BM25-style matching | Pure lexical baseline after `DocumentExtractionSkill` |
+| `vector` | Direct `docs/search` with `vectorQueries` | HNSW vector similarity | semantic similarity and paraphrase handling | Enabled once chunk embeddings exist |
+| `hybrid` | Direct `docs/search` with both `search` and `vectorQueries` | RRF fusion + semantic ranker (L2) | combined lexical + semantic recall, then reranked | Best direct-search comparison track |
+| `agentic` | Knowledge base `retrieve` action | per-subquery hybrid + semantic ranker | query planning, subqueries, source selection, grounded synthesis | Final official retrieval feature in the workshop |
+
+> Ranking note: `full_text` in this workshop is deliberately kept to pure BM25 so it is an honest lexical control. `hybrid` fuses the BM25 and vector result sets with [Reciprocal Rank Fusion (RRF)](https://learn.microsoft.com/en-us/azure/search/hybrid-search-ranking) and then applies the [semantic ranker](https://learn.microsoft.com/en-us/azure/search/semantic-search-overview) (L2 reranking) plus extractive captions. Agentic retrieval reranks every subquery the same way. The semantic ranker is a separately billed premium feature with [regional availability limits](https://learn.microsoft.com/en-us/azure/search/search-region-support), so confirm it is enabled on your search service before running Labs 04 through 08.
 
 The workshop keeps these modes intentionally separate:
 
 - Labs 03 through 06 compare ingestion improvements and direct retrieval behavior.
 - Lab 07 switches to agentic retrieval over the same corpus.
+- Knowledge sources, knowledge bases, and agentic retrieval are still preview features in Azure AI Search, so treat Lab 07 as a forward-looking capability rather than a production-locked contract.
 
 ## What Happens When You Upload One Document
 
@@ -134,7 +138,7 @@ One upload creates more than one useful artifact:
 
 1. the app parses and chunks the document into a canonical chunk set
 2. the original file is uploaded to Blob so Azure AI Search can enrich it
-3. the Search indexer runs the active skillset profile
+3. the Search indexer runs the skillset profile chosen for that upload
 4. the app merges useful Search-generated fields back into the canonical chunk set
 5. the canonical chunk set is published to the retrieval index
 6. the knowledge base is updated so agentic retrieval can query that corpus
@@ -153,9 +157,9 @@ Use these rules of thumb during the workshop and in real projects:
 
 | If your question is mostly about... | Start with | Why |
 | --- | --- | --- |
-| exact terms, product names, quoted phrases | `full_text` | lexical matching is the clearest baseline |
+| exact terms, product names, quoted phrases | `full_text` | pure BM25 lexical matching is the clearest baseline |
 | paraphrases, concept similarity, related wording | `vector` | semantic similarity can recover near-matches |
-| a mix of exact terms and paraphrases | `hybrid` | combines lexical and semantic evidence |
+| a mix of exact terms and paraphrases | `hybrid` | fuses lexical and vector evidence with RRF, then reranks with the semantic ranker |
 | multi-part questions, decomposition, cross-source reasoning | `agentic` | knowledge-base retrieval can plan and ground across sources |
 
 The workshop intentionally teaches `agentic` after the other three modes so participants can see what it adds instead of treating it as magic.
@@ -166,11 +170,11 @@ The design pattern is fixed throughout the workshop:
 
 1. Pick one representative PDF.
 2. Keep the source file constant.
-3. Change `WORKSHOP_SKILL_PROFILE`.
-4. Re-upload the same document.
+3. Choose the lab's profile in the **Skill Profile** picker on the upload screen.
+4. Upload the same document again.
 5. Compare retrieval modes against the new index state.
 
-This keeps the document variable fixed so the audience can attribute changes to the skillset profile or search mode instead of to a different source file.
+This keeps the document variable fixed so the audience can attribute changes to the skillset profile or search mode instead of to a different source file. The `WORKSHOP_SKILL_PROFILE` environment value only sets the picker's default, so no app restart is needed to switch profiles between labs.
 
 ## Progressive Lab Sequence
 
@@ -189,7 +193,7 @@ Run the labs in order.
 
 ### Lab matrix
 
-| Lab | `WORKSHOP_SKILL_PROFILE` | Retrieval mode focus | What changes | What to observe |
+| Lab | Skill Profile | Retrieval mode focus | What changes | What to observe |
 | --- | --- | --- | --- | --- |
 | 03 | `baseline_extract` | `full_text` | `DocumentExtractionSkill` only | lexical baseline and whole-document noise |
 | 04 | `chunk_vector` | `full_text`, `vector`, `hybrid` | `SplitSkill` and `AzureOpenAIEmbeddingSkill` | chunk precision, semantic recall, hybrid lift |
@@ -326,6 +330,8 @@ AZURE_SEARCH_REQUIRE_NATIVE_MULTIMODAL_SUCCESS=false
 AZURE_SEARCH_SKILLSET_PREFERRED_EXTRACTOR=document_extraction
 ```
 
+> `WORKSHOP_SKILL_PROFILE` now only sets the default selection of the in-app **Skill Profile** picker. You change profiles per upload from the UI, so you no longer edit this value or restart the app between labs.
+
 4. Configure Blob settings:
 
 ```dotenv
@@ -359,20 +365,21 @@ That makes the model roles easier to teach and reduces cross-feature throttling 
 
 ## Running The App
 
-From the repository root:
+From the repository root, install dependencies once:
 
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-python -m uvicorn backend.app:app --host 127.0.0.1 --port 8016
 ```
 
-Or use the launcher:
+Then launch with the helper script, which loads `.env` before starting uvicorn:
 
 ```powershell
 pwsh -ExecutionPolicy Bypass -File .\scripts\run-local-app.ps1 -Port 8016
 ```
+
+> Launching `uvicorn` directly does not read `.env`, so the Azure feature flags stay unset and the app runs in offline/disabled mode. Use the script (or export the variables yourself) for any Azure-backed run.
 
 Open:
 
@@ -387,13 +394,12 @@ Open:
 
 Use this pattern for every lab after the environment is ready:
 
-1. Set the lab’s `WORKSHOP_SKILL_PROFILE`.
-2. Restart the app.
-3. Upload the same document again.
-4. Wait until the corpus reaches `ready`.
-5. Use the retrieval mode required by the lab.
-6. Ask the same comparison prompts.
-7. Record what improved and what did not.
+1. Open the upload screen and choose the lab's profile in the **Skill Profile** picker.
+2. Upload the same document again.
+3. Wait until the corpus reaches `ready`.
+4. Use the retrieval mode required by the lab.
+5. Ask the same comparison prompts.
+6. Record what improved and what did not.
 
 ## Ingestion To Search Flow
 
@@ -446,6 +452,7 @@ These are the main best practices the labs are trying to teach:
 - keep chunk boundaries semantically coherent instead of arbitrary
 - add enrichment fields as supplements, not replacements, for source text
 - compare lexical, vector, and hybrid retrieval before jumping to agentic retrieval
+- understand how results are ranked: BM25 for lexical, HNSW similarity for vector, [RRF](https://learn.microsoft.com/en-us/azure/search/hybrid-search-ranking) to fuse them, and the [semantic ranker](https://learn.microsoft.com/en-us/azure/search/semantic-search-overview) (L2) to rerank and produce captions
 - use agentic retrieval when the question benefits from planning, subqueries, or multi-source reasoning
 - keep workshop and production systems honest by failing fast when required Azure steps do not complete
 

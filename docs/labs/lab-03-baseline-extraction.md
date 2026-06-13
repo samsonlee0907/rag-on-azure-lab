@@ -17,28 +17,28 @@ Establish the simplest Azure AI Search baseline:
 - What does a lexical baseline tell me before I add chunking and embeddings?
 - Why can the baseline return broader or noisier evidence?
 
-Set:
+This lab uses the **Baseline Extraction** skill profile, which you select per upload from the UI. You no longer edit `WORKSHOP_SKILL_PROFILE` or restart the app between labs.
 
-```dotenv
-WORKSHOP_SKILL_PROFILE=baseline_extract
-```
+## Step 1 - Start the app
 
-## Step 1 - Start or restart the app
+Always launch through the helper script so `.env` is loaded into the process environment. A raw `uvicorn` invocation does **not** read `.env`, which leaves the Azure feature flags unset and silently disables Search, Foundry, and enrichment:
 
 ```powershell
-python -m uvicorn backend.app:app --host 127.0.0.1 --port 8016
+.\scripts\run-local-app.ps1 -Port 8016
 ```
 
-## Step 2 - Verify the active profile
+## Step 2 - Confirm the profile is available
 
 Open [http://127.0.0.1:8016/api/workshop/profiles](http://127.0.0.1:8016/api/workshop/profiles) and confirm:
 
-- `active_profile_id` is `baseline_extract`
-- the target enrichment index name ends with `-baseline`
+- `baseline_extract` appears in the `profiles` list
+- its target enrichment index name ends with `-baseline`
 
 ## Step 3 - Upload the workshop document
 
 Use one representative document and keep it for the rest of the workshop.
+
+On the upload screen, set the **Skill Profile** picker to **Baseline Extraction** before submitting.
 
 Recommended document traits:
 
@@ -128,18 +128,20 @@ Baseline retrieval is intentionally simple:
 ```python
 # backend/services/indexing.py
 if retrieval_mode == "full_text":
+    # Pure BM25. No queryType=semantic, no semantic reranking, no captions.
     body["search"] = question
     return body
 ```
 
 - This is plain lexical search over the canonical chunk index.
+- It is deliberately kept to pure BM25 so it stays an honest lexical control group. The semantic ranker (L2 reranking) is not added until `hybrid` in Lab 04, which keeps the lexical-versus-semantic comparison clean.
 - It is the right baseline for demonstrating term sensitivity and lexical misses.
 
 ## Configuration Knobs
 
 | Variable | What it controls | Good value for this lab |
 | --- | --- | --- |
-| `WORKSHOP_SKILL_PROFILE` | Chooses the active skillset profile. | `baseline_extract` |
+| `WORKSHOP_SKILL_PROFILE` | Default selection of the **Skill Profile** picker. | `baseline_extract` |
 | `AZURE_SEARCH_SKILLSET_PREFERRED_EXTRACTOR` | Chooses the extractor implementation. | `document_extraction` |
 | `AZURE_SEARCH_REQUIRE_BLOB_SKILLSET_SUCCESS` | Stops the workshop on broken skillset runs. | `true` |
 | `DEFAULT_INGESTION_MODE` | Keeps uploads on the Blob + skillset pipeline. | `hybrid_blob_skillset` |

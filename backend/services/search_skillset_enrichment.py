@@ -83,6 +83,7 @@ class AzureSearchSkillsetEnrichmentService:
         source_name: str,
         intermediate: IntermediateDocument,
         chunks: list[ChunkRecord],
+        profile: WorkshopSkillProfile | None = None,
     ) -> SearchSkillsetEnrichmentSnapshot:
         if not settings.azure_search_enabled:
             return SearchSkillsetEnrichmentSnapshot(
@@ -103,7 +104,7 @@ class AzureSearchSkillsetEnrichmentService:
                 diagnostics={},
             )
 
-        profile = self._active_profile()
+        profile = profile or self._active_profile()
         blob_upload = self._upload_source_document(path, doc_id, source_name, profile=profile)
         data_source_name = self._data_source_name(doc_id, profile=profile)
         indexer_name = self._indexer_name(doc_id, profile=profile)
@@ -410,6 +411,11 @@ class AzureSearchSkillsetEnrichmentService:
         include_prompt_skills = prompt_skill_kind != "none"
         extractor_kind = self._active_extractor_kind(profile=active_profile)
         skills: list[dict[str, Any]] = [self._build_extractor_skill(extractor_kind=extractor_kind)]
+        if extractor_kind == "content_understanding":
+            # The Content Understanding skill emits chunked `text_sections` rather than a
+            # single content string, so merge them into /document/content_markdown to feed
+            # the same downstream graph (prompt seed, summary, keywords, embeddings).
+            skills.append(self._build_content_understanding_merge_skill())
         if self._profile_uses_split(active_profile):
             skills.append(self._build_split_skill())
         if self._profile_uses_visual_nlp(active_profile):
@@ -482,32 +488,40 @@ class AzureSearchSkillsetEnrichmentService:
             or settings.azure_search_skillset_preferred_extractor == "content_understanding"
         )
         if wants_content_understanding:
-            if settings.azure_content_understanding_enabled:
+            if settings.azure_content_understanding_skill_available:
                 return "content_understanding"
             if settings.workshop_strict_mode:
                 raise RuntimeError(
-                    "The workshop profile requires content_understanding, "
-                    "but Azure Content Understanding is not configured."
+                    "The workshop profile requires the Azure Content Understanding skill, "
+                    "but no billable Foundry resource is attached to the Search skillset. "
+                    "Set AZURE_FOUNDRY_RESOURCE_ENDPOINT (preferred, managed identity) "
+                    "or AZURE_FOUNDRY_API_KEY so the resource-attached skill can run."
                 )
         return "document_extraction"
 
     def _build_extractor_skill(self, *, extractor_kind: str | None = None) -> dict[str, Any]:
         active_extractor = extractor_kind or self._active_extractor_kind()
         if active_extractor == "content_understanding":
+            # GA `#Microsoft.Skills.Util.ContentUnderstandingSkill` is resource-attached:
+            # it binds to the billable Foundry resource declared in the skillset's
+            # `cognitiveServices` block (AIServicesByIdentity / managed identity) and
+            # therefore takes no resourceUri/apiKey/analyzerName. It performs semantic,
+            # layout-aware chunking internally and returns `text_sections`, which we merge
+            # into /document/content_markdown for the downstream enrichment graph.
             return {
                 "@odata.type": "#Microsoft.Skills.Util.ContentUnderstandingSkill",
                 "name": "#contentUnderstanding",
                 "context": "/document",
-                "description": "Preferred semantic extractor for multimodal Blob enrichment.",
-                "resourceUri": settings.azure_content_understanding_endpoint.rstrip("/"),
-                "apiKey": settings.azure_content_understanding_key,
-                "analyzerName": settings.azure_content_understanding_analyzer_id,
+                "description": "Resource-attached Azure Content Understanding extractor with semantic, layout-aware chunking for multimodal Blob enrichment.",
+                "extractionOptions": ["locationMetadata"],
+                "chunkingProperties": {
+                    "method": "semantic",
+                    "unit": "tokens",
+                    "maximumLength": 500,
+                },
                 "inputs": [{"name": "file_data", "source": "/document/file_data"}],
                 "outputs": [
-                    {"name": "markdownDocument", "targetName": "content_markdown"},
-                    {"name": "imageDescriptions", "targetName": "image_description_text"},
-                    {"name": "tableDescriptions", "targetName": "table_description_text"},
-                    {"name": "figureLocations", "targetName": "figure_locations_json"},
+                    {"name": "text_sections", "targetName": "cu_text_sections"},
                 ],
             }
         return {
@@ -535,6 +549,19 @@ class AzureSearchSkillsetEnrichmentService:
             "pageOverlapLength": 150,
             "inputs": [{"name": "text", "source": "/document/content_markdown"}],
             "outputs": [{"name": "textItems", "targetName": "split_chunks"}],
+        }
+
+    def _build_content_understanding_merge_skill(self) -> dict[str, Any]:
+        return {
+            "@odata.type": "#Microsoft.Skills.Text.MergeSkill",
+            "name": "#mergeContentUnderstanding",
+            "context": "/document",
+            "insertPreTag": "",
+            "insertPostTag": "\n\n",
+            "inputs": [
+                {"name": "itemsToInsert", "source": "/document/cu_text_sections/*/content"}
+            ],
+            "outputs": [{"name": "mergedText", "targetName": "content_markdown"}],
         }
 
     def _build_prompt_seed_split_skill(self) -> dict[str, Any]:
@@ -746,12 +773,13 @@ class AzureSearchSkillsetEnrichmentService:
                 "enableReprocessing": True,
             }
         if extractor_kind == "content_understanding":
-            body["outputFieldMappings"].extend(
-                [
-                    {"sourceFieldName": "/document/image_description_text", "targetFieldName": "image_description_text"},
-                    {"sourceFieldName": "/document/table_description_text", "targetFieldName": "table_description_text"},
-                    {"sourceFieldName": "/document/figure_locations_json", "targetFieldName": "figure_locations_json"},
-                ]
+            # Content Understanding already returns semantically chunked `text_sections`.
+            # Project each chunk's content as a Collection (one small term per chunk) rather
+            # than the merged full-document string, which would exceed the 32,766-byte
+            # single-term limit when indexed. The merged /document/content_markdown still
+            # feeds the prompt-seed/summary/keyword/embedding skills as an enrichment node.
+            body["outputFieldMappings"].append(
+                {"sourceFieldName": "/document/cu_text_sections/*/content", "targetFieldName": "split_chunks"}
             )
         if self._profile_uses_split(active_profile):
             body["outputFieldMappings"].append(
@@ -975,12 +1003,43 @@ class AzureSearchSkillsetEnrichmentService:
         status = str(last_result.get("status") or "").lower()
         if status != "transientfailure":
             return False, ""
-        for error in last_result.get("errors") or []:
+        # Azure AI Search has already classified this run as `transientFailure`, which by
+        # definition means a retry may succeed. Skill-execution flakes from the attached
+        # model service surface here as a transientFailure whose wrapper statusCode is 400
+        # ("Web Api skill response is invalid") while the underlying detail carries the real
+        # transient signal (e.g. InternalServerError / server_error). The original allow-list
+        # only matched 429/503 throttling, so a single transient 5xx failed the whole
+        # document under strict mode and forced a full manual re-upload. Broaden the match.
+        transient_status_codes = {408, 429, 500, 502, 503, 504}
+        transient_signatures = (
+            "too many requests",
+            "toomanyrequests",
+            "internalservererror",
+            "internal server error",
+            "server_error",
+            "server had an error",
+            "web api skill response is invalid",
+            "service unavailable",
+            "serviceunavailable",
+            "bad gateway",
+            "gateway timeout",
+            "timed out",
+            "timeout",
+        )
+        errors = last_result.get("errors") or []
+        for error in errors:
             detail = str(error.get("details") or error.get("errorMessage") or "").strip()
+            combined = " ".join(
+                str(value or "")
+                for value in (error.get("errorMessage"), error.get("details"), error.get("message"))
+            ).lower()
             status_code = int(error.get("statusCode") or 0)
-            normalized = detail.lower()
-            if status_code in {429, 503} or "too many requests" in normalized or "toomanyrequests" in normalized:
-                return True, detail
+            if status_code in transient_status_codes or any(sig in combined for sig in transient_signatures):
+                return True, detail or combined.strip()
+        # A transientFailure with no per-error detail is, by the service's own
+        # classification, safe to retry.
+        if not errors:
+            return True, "transientFailure reported with no error detail"
         return False, ""
 
     def _is_conflicting_update_response(self, response: requests.Response) -> bool:

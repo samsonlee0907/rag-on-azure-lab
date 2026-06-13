@@ -17,30 +17,32 @@ Then compare how `Hybrid` retrieval changes for diagram-heavy or image-heavy que
 - How does visual evidence become searchable and then answerable?
 - When should I add these skills in production, and when might they add noise or cost?
 
-Set:
+This lab uses the **Image And NLP Enrichment** skill profile, selected per upload from the UI.
 
-```dotenv
-WORKSHOP_SKILL_PROFILE=visual_nlp
+## Step 1 - Start the app
+
+Launch through the helper script if it is not already running:
+
+```powershell
+.\scripts\run-local-app.ps1 -Port 8016
 ```
 
-## Step 1 - Restart the app
-
-Restart after changing `.env`.
-
-## Step 2 - Verify the active profile
+## Step 2 - Confirm the profile is available
 
 Open [http://127.0.0.1:8016/api/workshop/profiles](http://127.0.0.1:8016/api/workshop/profiles) and confirm:
 
-- `active_profile_id` is `visual_nlp`
-- the target enrichment index name ends with `-visual-nlp`
+- `visual_nlp` appears in the `profiles` list
+- its target enrichment index name ends with `-visual-nlp`
 
 ## Step 3 - Upload the same document again
 
-Use the same diagram-heavy file.
+Use the same diagram-heavy file. On the upload screen, set the **Skill Profile** picker to **Image And NLP Enrichment** before submitting.
 
 ## Step 4 - Use `Hybrid` retrieval mode
 
 This lab keeps the retrieval mode fixed on `Hybrid` so the audience can isolate the effect of the new skills.
+
+> **OCR, image descriptions, and figure fields live in the enrichment index.** The direct modes (`Hybrid` / `Vector` / `Full text`) query the canonical index, which does **not** carry the visual-NLP fields. Those fields are populated only in the Search-managed enrichment index (`...-visual-nlp`), which is surfaced by **Agentic retrieval** as a separate source. Run the same question in **Agentic** mode to see the OCR text and image descriptions actually influence the answer; `Hybrid` alone will not show them.
 
 ## Step 5 - Ask image-aware comparison prompts
 

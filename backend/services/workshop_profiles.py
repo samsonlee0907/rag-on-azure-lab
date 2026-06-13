@@ -174,12 +174,11 @@ def build_workshop_skill_profiles() -> list[WorkshopSkillProfile]:
             recommended_retrieval_modes=("hybrid", "agentic"),
             recommended_question="How does the Content Understanding skill change chunk boundaries and diagram-grounded retrieval?",
             requires=(
-                "AZURE_CONTENT_UNDERSTANDING_ENDPOINT",
-                "AZURE_CONTENT_UNDERSTANDING_KEY",
-                "AZURE_CONTENT_UNDERSTANDING_ANALYZER_ID",
+                "AZURE_FOUNDRY_RESOURCE_ENDPOINT",
             ),
             notes=(
-                "Keep this later in the workshop because it adds another service dependency.",
+                "Keep this later in the workshop because it exercises the resource-attached Content Understanding skill.",
+                "The GA skill binds to the billable Foundry resource via the skillset's managed identity, so no separate Content Understanding endpoint, key, or analyzer is required.",
                 "Use it to compare with the earlier DocumentExtractionSkill and classic enrichment profiles.",
             ),
             implementation_status="optional_advanced_lab",

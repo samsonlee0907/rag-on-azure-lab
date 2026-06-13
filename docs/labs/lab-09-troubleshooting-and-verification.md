@@ -62,6 +62,16 @@ Check:
 - canonical index schema contains the vector field
 - the current corpus was uploaded after vector support was enabled
 - the selected corpus is the one you think it is
+- the semantic ranker is enabled and available in your search service region, since `hybrid` (and agentic) requests use `queryType=semantic` against `default-semantic-config`
+
+### Hybrid returns an error about semantic configuration or ranking
+
+Check:
+
+- the search service tier and region support the [semantic ranker](https://learn.microsoft.com/en-us/azure/search/semantic-search-overview)
+- semantic ranker billing is enabled (it is a separately billed premium feature)
+- the index actually has the `default-semantic-config` semantic configuration
+- `full_text` still works, which isolates the failure to the semantic ranking layer rather than BM25 or filters
 
 ### Agentic retrieval fails
 
@@ -160,6 +170,7 @@ return {
 - use `/api/config` to verify mode and feature flags before deeper troubleshooting
 - fail-fast workshop settings are useful because they make the true failing Azure step visible
 - keep one known-good document around as a control case while debugging
+- for production, prefer Microsoft Entra ID with role-based access over the `api-key` header that the workshop uses for Search index and query calls
 
 ## Files To Inspect
 

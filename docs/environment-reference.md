@@ -7,7 +7,7 @@
 - `LOG_LEVEL`: structured log verbosity.
 - `REQUEST_TIMEOUT_SECONDS`: backend request timeout used by the frontend as the chat baseline.
 - `WORKSHOP_STRICT_MODE`: enables fail-fast workshop behavior. When `true`, the app rejects parser downgrades and fails the job if the required Blob + skillset lane does not complete. Optional extensions such as native multimodal retrieval fail the job only if you explicitly require them.
-- `WORKSHOP_SKILL_PROFILE`: selects the active Search-managed enrichment profile for the progressive workshop track.
+- `WORKSHOP_SKILL_PROFILE`: sets the default selection of the in-app **Skill Profile** picker. Each upload chooses its own Search-managed enrichment profile from the UI, so this value only seeds the default and is not required to switch profiles between labs.
 
 Supported workshop profile values:
 

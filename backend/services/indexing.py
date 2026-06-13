@@ -989,10 +989,11 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
             body["filter"] = filter_expression
 
         if retrieval_mode == "full_text":
+            # Keep the baseline genuinely lexical: BM25 ranking only, with no
+            # semantic L2 reranking. This preserves the workshop's lexical
+            # control group so later labs can attribute gains to vectors,
+            # RRF fusion, and the semantic ranker introduced in hybrid mode.
             body["search"] = question
-            body["queryType"] = "semantic"
-            body["semanticConfiguration"] = "default-semantic-config"
-            body["captions"] = "extractive|highlight-false"
             return body
 
         if retrieval_mode == "vector":

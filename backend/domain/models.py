@@ -131,6 +131,7 @@ class JobRecord(BaseModel):
         )
     )
     ingestion_mode: str = "app_managed"
+    skill_profile_id: str | None = None
     source_kind: str = "upload"
     external_source_uri: str | None = None
     external_source_path: str | None = None
