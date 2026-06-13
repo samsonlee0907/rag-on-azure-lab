@@ -134,7 +134,7 @@ Recommended core workshop defaults:
 - `AZURE_SEARCH_ALLOW_FOUNDRY_ENRICHMENT_SUPPLEMENT=false`
 - `AZURE_SEARCH_REQUIRE_BLOB_SKILLSET_SUCCESS=true`
 
-The active workshop profile changes the target Search-managed enrichment index, skillset, and indexer names. Use `GET /api/workshop/profiles` to view the profile catalog and the exact target object names for each lab.
+The skill profile selected for an upload changes the target Search-managed enrichment index, skillset, and indexer names. Use `GET /api/workshop/profiles` to view the profile catalog and the exact target object names for each lab.
 
 Prompt-enrichment guardrails:
 

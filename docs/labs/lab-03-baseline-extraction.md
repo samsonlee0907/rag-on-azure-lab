@@ -137,6 +137,48 @@ if retrieval_mode == "full_text":
 - It is deliberately kept to pure BM25 so it stays an honest lexical control group. The semantic ranker (L2 reranking) is not added until `hybrid` in Lab 04, which keeps the lexical-versus-semantic comparison clean.
 - It is the right baseline for demonstrating term sensitivity and lexical misses.
 
+## Index Lifecycle: Freshness, Change Detection, And Deletion
+
+The baseline lab is the first place the Blob data source and Search indexer appear, so it is the right place to make the index lifecycle explicit. A RAG index is not a one-shot load - it has to stay in sync with the Blob container as documents change.
+
+This workshop relies on the indexer's **built-in change detection**. The blob indexer tracks each blob's `metadata_storage_last_modified` value as a high-water mark and only reprocesses blobs whose timestamp moved. That same timestamp is mapped into a queryable `last_updated` field:
+
+```python
+# backend/services/search_skillset_enrichment.py - _build_indexer_body (abridged)
+"fieldMappings": [
+    {"sourceFieldName": "metadata_storage_path", "targetFieldName": "doc_key",
+     "mappingFunction": {"name": "base64Encode"}},
+    {"sourceFieldName": "metadata_storage_last_modified", "targetFieldName": "last_updated"},
+],
+```
+
+- Re-uploading a changed document re-indexes only that blob, not the whole container.
+- `last_updated` is `filterable` and `sortable` in the index schema, so it powers freshness filters today and a `freshness` scoring-function boost once you add a scoring profile (see Lab 04).
+
+The indexer can also **skip unchanged skill work** when the enrichment cache is enabled:
+
+```python
+# backend/services/search_skillset_enrichment.py - _build_indexer_body (abridged)
+if settings.azure_search_enable_enrichment_cache and settings.azure_search_enrichment_cache_connection_string:
+    body["cache"] = {
+        "storageConnectionString": settings.azure_search_enrichment_cache_connection_string,
+        "enableReprocessing": True,
+    }
+```
+
+- Incremental enrichment caching means an unchanged document does not pay for OCR, image analysis, or prompt skills again on a rerun.
+
+**Deletion is the gap to call out.** The data source this app builds defines no `dataDeletionDetectionPolicy`, so deleting a blob does **not** remove its documents from the index automatically - the indexer only adds and updates. The app handles removals explicitly on the canonical index instead:
+
+```python
+# backend/services/indexing.py
+def delete_chunks(self, chunks: list[ChunkRecord], *, index_name: str | None = None) -> None:
+    ...
+    actions = [{"@search.action": "delete", "chunk_id": chunk.chunk_id} for chunk in chunks]
+```
+
+For a production Blob-driven index you would close that gap with a [soft-delete deletion detection policy](https://learn.microsoft.com/en-us/azure/search/search-howto-index-changed-deleted-blobs) on the data source, an indexer [schedule](https://learn.microsoft.com/en-us/azure/search/search-howto-schedule-indexers) for periodic pickup, and a [reset and rerun](https://learn.microsoft.com/en-us/azure/search/search-howto-run-reset-indexers) when you change the skillset or schema and need a full reprocess.
+
 ## Configuration Knobs
 
 | Variable | What it controls | Good value for this lab |
@@ -152,6 +194,7 @@ if retrieval_mode == "full_text":
 - treat extracted text as a starting point, not the final retrieval unit
 - keep parser-side figure work out of the baseline so you can attribute later improvements to the visual lab
 - compare the same prompts across labs so improvements remain measurable
+- plan for index freshness early: change detection keeps re-uploads cheap, but blob deletions need an explicit deletion policy or app-side delete
 
 ## Files To Inspect
 
@@ -166,3 +209,6 @@ if retrieval_mode == "full_text":
 - [Document Extraction skill](https://learn.microsoft.com/en-us/azure/search/cognitive-search-skill-document-extraction)
 - [Create a full-text query](https://learn.microsoft.com/en-us/azure/search/search-query-create)
 - [BM25 relevance scoring](https://learn.microsoft.com/en-us/azure/search/index-similarity-and-scoring)
+- [Detect changed and deleted blobs](https://learn.microsoft.com/en-us/azure/search/search-howto-index-changed-deleted-blobs)
+- [Schedule an indexer](https://learn.microsoft.com/en-us/azure/search/search-howto-schedule-indexers)
+- [Reset and rerun indexers](https://learn.microsoft.com/en-us/azure/search/search-howto-run-reset-indexers)

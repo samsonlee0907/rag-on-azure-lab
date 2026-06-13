@@ -31,14 +31,16 @@ Verify:
 - Search is enabled
 - Blob ingestion is enabled
 - strict mode is enabled
-- the active workshop profile matches the lab you intend to run
-- the available retrieval modes are `full_text`, `vector`, `hybrid`, and `agentic`
+- `/api/workshop/profiles` lists every Skill Profile the upload picker can offer (profiles are now chosen per document, so there is no single "active" profile to match against a lab)
+- the available retrieval modes include `full_text`, `vector`, `hybrid`, and `agentic`
 
 ### 3. Python tests
 
 ```powershell
-python -m unittest discover -s tests
+python -m pytest
 ```
+
+The suite uses `pytest` (with `pytest-asyncio` for the async retrieval tests), so run it through `pytest` rather than `unittest`, which would skip the async cases.
 
 ## Common Failure Patterns
 
@@ -51,7 +53,7 @@ Check:
 - Foundry resource endpoint
 - Search service identity access to Foundry
 - indexer status in Azure AI Search
-- active workshop profile and its target index or skillset names
+- the Skill Profile selected for that upload and its target index or skillset names
 
 ### Vector or hybrid retrieval fails
 

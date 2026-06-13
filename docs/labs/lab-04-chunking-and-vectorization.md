@@ -180,6 +180,61 @@ def _direct_result_rank(item):
 
 Because `full_text` is pure BM25 it has no `@search.rerankerScore`, so it falls back to the BM25 score. The semantic ranker is a separately billed premium feature with [regional limits](https://learn.microsoft.com/en-us/azure/search/search-region-support); if `hybrid` queries fail, confirm semantic ranker is enabled on the search service before debugging anything else.
 
+## Relevance Tuning Beyond The Semantic Ranker
+
+The ranking ladder in this workshop ends at the semantic ranker, but that is not the only relevance lever Azure AI Search exposes. The layer this lab does **not** use is a [scoring profile](https://learn.microsoft.com/en-us/azure/search/index-add-scoring-profiles), and it is worth understanding where it would fit.
+
+A scoring profile is attached to the index definition and influences the **BM25 layer** - the lexical score that feeds `full_text` directly and forms half of the fused `hybrid` result. It does two things the semantic ranker cannot:
+
+- **Field weighting.** BM25 treats every searchable field equally by default. A scoring profile lets you say a hit in `summary_text` or `keyword_hints` is worth more than a hit in raw `clean_text`, so a term that lands in the curated enrichment fields outranks the same term buried in body text.
+- **Scoring functions.** You can boost results by a `freshness` function over `last_updated`, by tag membership, or by a magnitude field, before fusion and reranking ever run.
+
+The canonical index this app builds defines a semantic configuration and an HNSW vector profile but intentionally **no** `scoringProfiles` array:
+
+```python
+# backend/services/indexing.py - _ensure_index (abridged)
+body = {
+    "name": index_name,
+    "fields": fields,
+    "semantic": {"defaultConfiguration": "default-semantic-config", ...},
+    # no "scoringProfiles" key - relevance relies on RRF + the semantic ranker
+}
+```
+
+To teach this layer, you would add a profile to that same body and reference it on the query with `scoringProfile`:
+
+```jsonc
+// Conceptual addition to the index body
+"scoringProfiles": [
+  {
+    "name": "enrichment-boost",
+    "text": {
+      "weights": {
+        "summary_text": 3,
+        "keyword_hints": 2,
+        "source_name": 2,
+        "clean_text": 1
+      }
+    },
+    "functions": [
+      {
+        "type": "freshness",
+        "fieldName": "last_updated",
+        "boost": 2,
+        "interpolation": "linear",
+        "freshness": { "boostingDuration": "P30D" }
+      }
+    ]
+  }
+]
+```
+
+Key points to make explicit for the audience:
+
+- A scoring profile and the semantic ranker are **complementary**, not alternatives. The scoring profile shapes the BM25 inputs that RRF fuses; the semantic ranker then reorders the fused top set. Field weights change *what* rises into the rerank window; the ranker changes *how* that window is ordered.
+- Scoring profiles are free and run inside the index; the semantic ranker is separately billed. Field weighting is often the cheapest first move when one field (here, the curated `summary_text`) is clearly more trustworthy than the rest.
+- Because the workshop index ships without a scoring profile, every relevance gain you see across Labs 03-07 is attributable to chunking, embeddings, enrichment, and the semantic ranker - which keeps the comparison honest. Adding a scoring profile is the natural next step once you want to tune for a specific corpus.
+
 ## Configuration Knobs
 
 | Variable | What it controls | Good workshop variation |
@@ -198,6 +253,7 @@ Because `full_text` is pure BM25 it has no `@search.rerankerScore`, so it falls 
 - embeddings are only as useful as the chunk boundaries they represent
 - hybrid search is usually the best direct-search comparison mode because it blends lexical and semantic signals
 - compare Search-managed chunking and app-managed chunking deliberately instead of assuming they solve the same problem
+- reach for a scoring profile (field weights, freshness) before more expensive layers when one field is clearly more trustworthy than the rest
 
 ## Files To Inspect
 
@@ -215,3 +271,4 @@ Because `full_text` is pure BM25 it has no `@search.rerankerScore`, so it falls 
 - [Hybrid search overview](https://learn.microsoft.com/en-us/azure/search/hybrid-search-overview)
 - [Relevance scoring in hybrid search using RRF](https://learn.microsoft.com/en-us/azure/search/hybrid-search-ranking)
 - [Semantic ranking in Azure AI Search](https://learn.microsoft.com/en-us/azure/search/semantic-search-overview)
+- [Add scoring profiles to boost relevance](https://learn.microsoft.com/en-us/azure/search/index-add-scoring-profiles)
