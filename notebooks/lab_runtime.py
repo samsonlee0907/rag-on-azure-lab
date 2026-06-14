@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -76,13 +77,29 @@ def bootstrap() -> dict[str, Any]:
     return {
         "repo_root": str(REPO_ROOT),
         "env_values_loaded": loaded,
-        "search_endpoint": settings.azure_search_endpoint,
+        "search_endpoint": _redact_endpoint(settings.azure_search_endpoint),
         "search_configured": bool(settings.azure_search_endpoint and settings.azure_search_key),
         "embedding_deployment": settings.azure_openai_embedding_deployment,
         "chat_deployment": settings.azure_foundry_chat_deployment,
         "agentic_planning_model": settings.azure_search_llm_deployment,
         "canonical_index": settings.azure_search_index_name,
     }
+
+
+def _redact_endpoint(endpoint: str | None) -> str:
+    """Mask the resource-specific host so notebook outputs are safe to publish.
+
+    Keeps the Azure service domain (e.g. ``search.windows.net``) for context but
+    replaces the unique resource name with a placeholder, so committing executed
+    notebooks does not reveal the live resource.
+    """
+
+    if not endpoint:
+        return ""
+    match = re.match(r"^(https?://)([^.]+)(\..+)$", endpoint.strip())
+    if not match:
+        return "https://your-search-service.search.windows.net"
+    return f"{match.group(1)}your-search-service{match.group(3)}"
 
 
 # --------------------------------------------------------------------------- #
