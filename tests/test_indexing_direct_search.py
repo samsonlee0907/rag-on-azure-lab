@@ -11,6 +11,7 @@ from backend.services.indexing import (
     _extract_best_snippet,
     _extract_navigation_snippet,
 )
+from backend.core.config import SearchKnowledgeSourceConfig
 
 
 class DirectSearchBodyTests(unittest.TestCase):
@@ -240,6 +241,76 @@ class DirectSearchBodyTests(unittest.TestCase):
         snippet = _extract_navigation_snippet(text, "Which page covers paints and painting?")
 
         self.assertEqual(snippet, "Paints and painting 633")
+
+
+class KnowledgeBaseReconciliationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.adapter = AzureSearchKnowledgeBaseAdapter()
+
+    def _source(self, name: str) -> SearchKnowledgeSourceConfig:
+        return SearchKnowledgeSourceConfig(
+            knowledge_source_name=name,
+            index_name=f"{name}-index",
+            description=name,
+        )
+
+    def test_drops_sources_absent_from_knowledge_base(self) -> None:
+        primary = self.adapter._primary_knowledge_source()
+        phantom = self._source("ai-search-lab-enrichment-source-baseline-extract")
+        with patch.object(
+            self.adapter,
+            "_knowledge_base_source_names",
+            return_value={primary.knowledge_source_name, "ai-search-lab-enrichment-source-visual-nlp"},
+        ):
+            retained, diagnostics = self.adapter._reconcile_with_knowledge_base([primary, phantom])
+
+        self.assertEqual([s.knowledge_source_name for s in retained], [primary.knowledge_source_name])
+        self.assertEqual(
+            diagnostics["knowledge_sources_dropped_not_in_kb"],
+            [phantom.knowledge_source_name],
+        )
+        self.assertTrue(diagnostics["knowledge_base_membership_filtered"])
+
+    def test_keeps_all_sources_when_present_in_knowledge_base(self) -> None:
+        primary = self.adapter._primary_knowledge_source()
+        enrichment = self._source("ai-search-lab-enrichment-source-visual-nlp")
+        with patch.object(
+            self.adapter,
+            "_knowledge_base_source_names",
+            return_value={primary.knowledge_source_name, enrichment.knowledge_source_name},
+        ):
+            retained, diagnostics = self.adapter._reconcile_with_knowledge_base([primary, enrichment])
+
+        self.assertEqual(
+            [s.knowledge_source_name for s in retained],
+            [primary.knowledge_source_name, enrichment.knowledge_source_name],
+        )
+        self.assertEqual(diagnostics, {})
+
+    def test_falls_back_to_primary_when_nothing_matches(self) -> None:
+        primary = self.adapter._primary_knowledge_source()
+        phantom = self._source("ai-search-lab-enrichment-source-baseline-extract")
+        with patch.object(
+            self.adapter,
+            "_knowledge_base_source_names",
+            return_value={primary.knowledge_source_name},
+        ):
+            retained, diagnostics = self.adapter._reconcile_with_knowledge_base([phantom])
+
+        self.assertEqual([s.knowledge_source_name for s in retained], [primary.knowledge_source_name])
+        self.assertTrue(diagnostics["knowledge_base_membership_filtered"])
+
+    def test_returns_sources_unchanged_when_knowledge_base_empty(self) -> None:
+        primary = self.adapter._primary_knowledge_source()
+        phantom = self._source("ai-search-lab-enrichment-source-baseline-extract")
+        with patch.object(self.adapter, "_knowledge_base_source_names", return_value=set()):
+            retained, diagnostics = self.adapter._reconcile_with_knowledge_base([primary, phantom])
+
+        self.assertEqual(
+            [s.knowledge_source_name for s in retained],
+            [primary.knowledge_source_name, phantom.knowledge_source_name],
+        )
+        self.assertEqual(diagnostics, {})
 
 
 if __name__ == "__main__":

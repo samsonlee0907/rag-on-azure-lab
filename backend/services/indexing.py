@@ -541,6 +541,8 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
             doc_source_assignments=doc_source_assignments,
             include_enrichment=True,
         )
+        selected_sources, membership_diagnostics = self._reconcile_with_knowledge_base(selected_sources)
+        routing_diagnostics.update(membership_diagnostics)
         grouped_doc_ids = self._group_doc_ids_by_source(doc_ids or [], doc_source_assignments or {})
         knowledge_source_params = [
             self._build_knowledge_source_params(
@@ -996,6 +998,53 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
             return {}
         self._raise_for_status(response)
         return response.json()
+
+    def _knowledge_base_source_names(self) -> set[str]:
+        kb = self._get_knowledge_base(settings.azure_search_knowledge_base_name)
+        sources = kb.get("knowledgeSources") if isinstance(kb, dict) else None
+        if not isinstance(sources, list):
+            return set()
+        names: set[str] = set()
+        for source in sources:
+            if isinstance(source, dict):
+                name = source.get("name")
+                if isinstance(name, str) and name:
+                    names.add(name)
+        return names
+
+    def _reconcile_with_knowledge_base(
+        self, sources: list[SearchKnowledgeSourceConfig]
+    ) -> tuple[list[SearchKnowledgeSourceConfig], dict[str, Any]]:
+        """Drop targeted knowledge sources that are not registered in the live KB.
+
+        The agentic ``/retrieve`` call requires every ``knowledgeSourceParams``
+        target to match a knowledge source registered in the knowledge base.
+        The enrichment source name is derived from the active workshop profile,
+        so it can drift away from whatever profile last provisioned the KB (for
+        example after the per-job profile pin is restored to the default). When
+        that happens, targeting the phantom enrichment source returns a 400. We
+        filter the targets down to the sources the KB actually exposes, always
+        keeping the primary application source so retrieval still works.
+        """
+        kb_names = self._knowledge_base_source_names()
+        if not kb_names:
+            return sources, {}
+        retained = [source for source in sources if source.knowledge_source_name in kb_names]
+        dropped = [
+            source.knowledge_source_name
+            for source in sources
+            if source.knowledge_source_name not in kb_names
+        ]
+        if not retained:
+            primary = self._primary_knowledge_source()
+            retained = [primary] if primary.knowledge_source_name in kb_names else sources
+        diagnostics: dict[str, Any] = {}
+        if dropped:
+            diagnostics = {
+                "knowledge_sources_dropped_not_in_kb": dropped,
+                "knowledge_base_membership_filtered": True,
+            }
+        return retained, diagnostics
 
     def _delete_knowledge_base(self, knowledge_base_name: str) -> None:
         url = f"{self.endpoint}/knowledgebases('{knowledge_base_name}')?api-version={self.api_version}"
