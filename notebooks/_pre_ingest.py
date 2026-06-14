@@ -5,7 +5,9 @@ same source PDF into a progressively richer Azure AI Search index.
 """
 
 import sys
-sys.path.insert(0, r"c:\Users\samsonlee\rag-on-azure-lab\notebooks")
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lab_runtime as lab
 
 info = lab.bootstrap()

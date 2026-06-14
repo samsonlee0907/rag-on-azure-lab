@@ -38,7 +38,12 @@ def _find_repo_root() -> Path:
 REPO_ROOT = _find_repo_root()
 RESULTS_DIR = REPO_ROOT / "notebooks" / "results"
 RESULTS_FILE = RESULTS_DIR / "lab_runs.jsonl"
-DEFAULT_PDF = Path(r"C:\Users\samsonlee\Downloads\Deep Excavation Design and Construction.pdf")
+DEFAULT_PDF = Path(
+    os.environ.get(
+        "LAB_SOURCE_PDF",
+        str(Path.home() / "Downloads" / "Deep Excavation Design and Construction.pdf"),
+    )
+)
 
 
 def _load_dotenv(path: Path) -> int:
@@ -75,7 +80,7 @@ def bootstrap() -> dict[str, Any]:
     from backend.core.config import settings
 
     return {
-        "repo_root": str(REPO_ROOT),
+        "repo_root": _redact_path(REPO_ROOT),
         "env_values_loaded": loaded,
         "search_endpoint": _redact_endpoint(settings.azure_search_endpoint),
         "search_configured": bool(settings.azure_search_endpoint and settings.azure_search_key),
@@ -84,6 +89,23 @@ def bootstrap() -> dict[str, Any]:
         "agentic_planning_model": settings.azure_search_llm_deployment,
         "canonical_index": settings.azure_search_index_name,
     }
+
+
+def _redact_path(path: "str | os.PathLike[str] | None") -> str:
+    """Mask the user home directory so committed notebook outputs are safe.
+
+    Replaces the current user's home directory prefix (e.g.
+    ``C:\\Users\\<name>``) with ``<home>`` so executed notebooks do not leak the
+    local username or machine-specific paths when committed.
+    """
+
+    if not path:
+        return ""
+    text = str(path)
+    home = str(Path.home())
+    if home and text.lower().startswith(home.lower()):
+        return "<home>" + text[len(home):]
+    return text
 
 
 def _redact_endpoint(endpoint: str | None) -> str:
