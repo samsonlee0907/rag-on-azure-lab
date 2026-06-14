@@ -80,5 +80,77 @@ class PipelineMessageCleanupTests(unittest.TestCase):
         self.assertEqual(chunks[1].image_evidence[0]["artifact_id"], "fig-2")
 
 
+class ActiveSkillProfilePinningTests(unittest.TestCase):
+    def test_context_manager_pins_and_restores_global_profile(self) -> None:
+        from backend.core.config import settings
+        from backend.services.pipeline import _active_skill_profile
+
+        previous = settings.workshop_skill_profile
+        try:
+            settings.workshop_skill_profile = "baseline_extract"
+            with _active_skill_profile("visual_nlp"):
+                self.assertEqual(settings.workshop_skill_profile, "visual_nlp")
+            self.assertEqual(settings.workshop_skill_profile, "baseline_extract")
+        finally:
+            settings.workshop_skill_profile = previous
+
+    def test_context_manager_restores_global_on_error(self) -> None:
+        from backend.core.config import settings
+        from backend.services.pipeline import _active_skill_profile
+
+        previous = settings.workshop_skill_profile
+        try:
+            settings.workshop_skill_profile = "baseline_extract"
+            with self.assertRaises(RuntimeError):
+                with _active_skill_profile("chunk_vector"):
+                    self.assertEqual(settings.workshop_skill_profile, "chunk_vector")
+                    raise RuntimeError("boom")
+            self.assertEqual(settings.workshop_skill_profile, "baseline_extract")
+        finally:
+            settings.workshop_skill_profile = previous
+
+    def test_empty_profile_id_leaves_global_unchanged(self) -> None:
+        from backend.core.config import settings
+        from backend.services.pipeline import _active_skill_profile
+
+        previous = settings.workshop_skill_profile
+        try:
+            settings.workshop_skill_profile = "genai_enrichment"
+            with _active_skill_profile(None):
+                self.assertEqual(settings.workshop_skill_profile, "genai_enrichment")
+            self.assertEqual(settings.workshop_skill_profile, "genai_enrichment")
+        finally:
+            settings.workshop_skill_profile = previous
+
+    def test_run_pins_job_profile_for_duration(self) -> None:
+        from backend.core.config import settings
+        from backend.services.job_store import job_store
+
+        pipeline = IngestionPipeline()
+        job = JobRecord(
+            doc_id="doc-pin",
+            file_name="report.pdf",
+            stored_path="C:/temp/report.pdf",
+            skill_profile_id="visual_nlp",
+        )
+
+        previous = settings.workshop_skill_profile
+        observed: list[str] = []
+        original_get = job_store.get
+        try:
+            settings.workshop_skill_profile = "baseline_extract"
+            job_store.get = lambda doc_id: job  # type: ignore[assignment]
+            pipeline._run_job = lambda doc_id: observed.append(settings.workshop_skill_profile)  # type: ignore[assignment]
+
+            pipeline.run("doc-pin")
+
+            self.assertEqual(observed, ["visual_nlp"])
+            self.assertEqual(settings.workshop_skill_profile, "baseline_extract")
+        finally:
+            job_store.get = original_get  # type: ignore[assignment]
+            settings.workshop_skill_profile = previous
+
+
 if __name__ == "__main__":
     unittest.main()
+

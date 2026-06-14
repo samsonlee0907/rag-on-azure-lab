@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+from contextlib import contextmanager
 from pathlib import Path
 
 from fastapi import BackgroundTasks, UploadFile
@@ -20,6 +21,34 @@ from backend.services.workshop_profiles import get_workshop_skill_profile
 
 logger = logging.getLogger(__name__)
 MAX_DIRECT_CHUNK_IMAGE_PAGE_SPAN = 12
+
+
+@contextmanager
+def _active_skill_profile(profile_id: str | None):
+    """Pin the process-wide active skill profile for the duration of a block.
+
+    Several indexing helpers (``_vector_indexing_enabled``,
+    ``_ensure_knowledge_sources``/``_ensure_knowledge_base``, and
+    ``_enrichment_knowledge_source``) resolve the active profile via
+    ``get_workshop_skill_profile()`` with no argument, which reads the global
+    ``settings.workshop_skill_profile``. A job carries its own
+    ``skill_profile_id`` chosen from the upload picker, so without pinning the
+    global value here, publishing a non-default profile would silently fall back
+    to the process default (e.g. skipping ``content_vector`` embeddings). This
+    pins the global to the job's profile and restores the previous value after.
+    """
+
+    resolved = (profile_id or "").strip()
+    if not resolved:
+        yield
+        return
+    previous = settings.workshop_skill_profile
+    settings.workshop_skill_profile = resolved
+    try:
+        yield
+    finally:
+        settings.workshop_skill_profile = previous
+
 
 
 class IngestionPipeline:
@@ -124,6 +153,11 @@ class IngestionPipeline:
         return updated
 
     def run(self, doc_id: str) -> None:
+        job = job_store.get(doc_id)
+        with _active_skill_profile(job.skill_profile_id):
+            self._run_job(doc_id)
+
+    def _run_job(self, doc_id: str) -> None:
         try:
             job = job_store.get(doc_id)
             path = Path(job.stored_path)
