@@ -495,6 +495,49 @@ def hits_table(hits: list[dict[str, Any]]):
         return hits
 
 
+def keypoint_coverage(answer: str, keypoints: list[Any]) -> dict[str, Any]:
+    """Score an answer against a rubric of expected key points.
+
+    ``keypoints`` is a list where each item is either a plain string (used as
+    both the label and the single match term) or a ``(label, [terms])`` pair.
+    A key point counts as covered when any of its terms appears in the answer
+    (case-insensitive substring match). Returns the covered/missing labels and a
+    ``"n/total"`` score string so a reader who does not know the domain can see,
+    at a glance, how completely each retrieval mode answered the question.
+    """
+
+    text = (answer or "").lower()
+    covered: list[str] = []
+    missing: list[str] = []
+    for item in keypoints:
+        if isinstance(item, (list, tuple)):
+            label, terms = item[0], list(item[1])
+        else:
+            label, terms = item, [item]
+        if any(term.lower() in text for term in terms):
+            covered.append(label)
+        else:
+            missing.append(label)
+    total = len(keypoints)
+    return {
+        "covered": covered,
+        "missing": missing,
+        "covered_count": len(covered),
+        "total": total,
+        "score": f"{len(covered)}/{total}",
+    }
+
+
+def citation_summary(response, *, top: int = 3) -> str:
+    """Return a compact ``section (pages)`` summary of the top citations."""
+    parts: list[str] = []
+    for cite in response.citations[:top]:
+        section = " > ".join(cite.section_path) if cite.section_path else (cite.title or "—")
+        pages = f" p.{cite.page_numbers}" if cite.page_numbers else ""
+        parts.append(f"{section}{pages}")
+    return "; ".join(parts) if parts else "—"
+
+
 # --------------------------------------------------------------------------- #
 # Results recording (for the final comparison notebook)
 # --------------------------------------------------------------------------- #
