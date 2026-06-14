@@ -25,6 +25,7 @@ The same document is re-ingested through progressively richer Azure AI Search sk
 - [Choosing A Search Mode](#choosing-a-search-mode)
 - [Workshop Design](#workshop-design)
 - [Progressive Lab Sequence](#progressive-lab-sequence)
+- [Executable Lab Notebooks](#executable-lab-notebooks)
 - [Architecture](#architecture)
 - [Prerequisites](#prerequisites)
 - [Azure Resources To Deploy](#azure-resources-to-deploy)
@@ -201,6 +202,17 @@ Run the labs in order.
 | 06 | `visual_nlp` | `hybrid` | OCR, image analysis, language detection | diagram text, image descriptions, richer evidence |
 | 07 | keep the best prior profile | `agentic` | switch from direct search to knowledge-base retrieval | subqueries, decomposition, grounded synthesis |
 | 08 | `content_understanding` | `hybrid`, `agentic` | Search-managed semantic extraction alternative | chunk boundary quality and structure handling |
+
+## Executable Lab Notebooks
+
+The [`notebooks/`](./notebooks/) folder contains executed Jupyter notebooks — one
+per lab plus a final comparison notebook — that drive the **same backend pipeline
+the UI runs**, in-process, against live Azure AI Search. They are committed with
+real outputs so you can read the ingestion stats, retrieval hits, and grounded
+answers without running anything. See the [notebooks README](./notebooks/README.md)
+for details. The final [comparison notebook](./notebooks/lab-09-comparison-summary.ipynb)
+puts full-text, vector, hybrid, and agentic retrieval side-by-side on the same two
+questions to make the trade-offs concrete.
 
 ## Architecture
 

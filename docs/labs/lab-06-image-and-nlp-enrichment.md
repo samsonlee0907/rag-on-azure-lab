@@ -42,7 +42,7 @@ Use the same diagram-heavy file. On the upload screen, set the **Skill Profile**
 
 This lab keeps the retrieval mode fixed on `Hybrid` so the audience can isolate the effect of the new skills.
 
-> **OCR, image descriptions, and figure fields live in the enrichment index.** The direct modes (`Hybrid` / `Vector` / `Full text`) query the canonical index, which does **not** carry the visual-NLP fields. Those fields are populated only in the Search-managed enrichment index (`...-visual-nlp`), which is surfaced by **Agentic retrieval** as a separate source. Run the same question in **Agentic** mode to see the OCR text and image descriptions actually influence the answer; `Hybrid` alone will not show them.
+> **The visual-NLP fields split across two indexes — and that determines which retrieval modes can see them.** During enrichment, the **image-analysis descriptions** (`image_description_text`) are merged back onto the canonical chunks, so `Hybrid` / `Vector` / `Full text` *can* surface image descriptions directly. The **OCR text** and **detected-language** signals are *not* merged onto canonical chunks — they live only in the Search-managed enrichment index (`...-visual-nlp`), which is surfaced by **Agentic retrieval** as a separate source. So: run the question in `Hybrid` to see image descriptions take effect, then run the same question in **Agentic** mode to bring in the OCR text the direct modes cannot reach. The lesson is that *which* visual signal influences the answer depends on the merge contract, not just on which skill ran.
 
 ## Step 5 - Ask image-aware comparison prompts
 
