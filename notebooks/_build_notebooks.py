@@ -247,50 +247,88 @@ def build_lab06() -> None:
     cells = [
         md(
             "# Lab 06 \u00b7 Image and NLP Enrichment (Notebook Walkthrough)\n\n"
-            "**Concept.** The `visual_nlp` profile adds `OCRSkill`, `ImageAnalysisSkill`, and `LanguageDetectionSkill`. "
-            "This matters for a diagram-heavy engineering document where evidence lives in figures, not just prose.\n\n"
-            "**Critical nuance (which fields reach which retrieval mode):**\n"
-            "- **Image descriptions** (`image_description_text`) are merged back onto the canonical chunks \u2192 visible to `full_text` / `vector` / `hybrid`.\n"
-            "- **OCR text** and **detected language** live only in the Search-managed enrichment index \u2192 surfaced by **Agentic** retrieval.\n\n"
-            "So Hybrid reflects image descriptions, while Agentic additionally brings in OCR text the direct modes cannot reach."
+            "**Concept.** The `visual_nlp` profile adds `OcrSkill`, `ImageAnalysisSkill`, and `LanguageDetectionSkill` "
+            "to the Blob skillset. This matters for a diagram-heavy engineering document where evidence can live in "
+            "figures, not just prose.\n\n"
+            "**Where each signal lands (this is the part people get wrong):**\n"
+            "- `ImageAnalysisSkill` and `OcrSkill` run at the per-image context (`/document/normalized_images/*`), so "
+            "their outputs land *under that path*. The indexer output field mappings must therefore read "
+            "`/document/normalized_images/*/...` - and because `description` is a complex `{tags, captions}` object, the "
+            "mapping drills into `captions/*/text` to capture the human-readable caption sentences. These populate the "
+            "**Search-managed enrichment index** (`...-visual-nlp`), which **Agentic** retrieval can draw on.\n"
+            "- The app then merges a **document-level `image_description_text`** (the first several captions) back onto "
+            "every **canonical chunk**, so `full_text` / `vector` / `hybrid` also gain a visual signal.\n"
+            "- The parser additionally attaches **figure thumbnails** (`image_evidence`) to the chunks on a figure's "
+            "page, so the UI can show grounded visuals. Thumbnails are produced by **rendering each page and cropping "
+            "the figure region** - not by pulling the raw embedded image. That matters because engineering PDFs often "
+            "store figures as 1-bit image masks / soft-masked (SMask) stencils whose paint colour lives in the page "
+            "content stream, so the raw bitmap is solid black; rendering composites them faithfully. The same render "
+            "path also captures **vector-drawn charts** (analyst decks) that have no embedded image at all.\n\n"
+            "**Key lesson:** the caption *quality* depends on the document. Image Analysis 3.2 returns descriptive but "
+            "generic captions (\u201ca construction site with cranes and buildings\u201d, \u201cengineering drawing\u201d), "
+            "and OCR on vector-drawn diagrams yields fragmentary text (\u201c17 07 2017\u201d). Always **verify what "
+            "actually landed** instead of assuming."
         ),
         md("## Step 1 \u2014 Bootstrap"),
         code(SETUP),
         md("## Step 2 \u2014 Ingest with image + NLP enrichment"),
         code("job = lab.ingest(skill_profile='visual_nlp', reuse=True)\nlab.chunk_overview(job)"),
-        md("`chunks_with_image_description` should now be **non-zero** \u2014 image analysis descriptions were merged onto the canonical chunks."),
-        md("## Step 3 \u2014 Inspect the image descriptions merged onto chunks"),
+        md(
+            "`chunks_with_image_description` is now **non-zero** - every chunk carries the merged document-level "
+            "`image_description_text` assembled from the Image Analysis captions. The summaries and keyword hints from "
+            "Lab 05 are still present too. The next cell shows the actual captions and figure thumbnails that landed."
+        ),
+        md("## Step 3 \u2014 Inspect what the visual lane actually produced"),
         code(
             "import pandas as pd\n\n"
             "chunks = lab.load_chunks(job)\n"
-            "with_img = [c for c in chunks if c.get('image_description_text')]\n"
-            "print('chunks carrying image descriptions:', len(with_img))\n"
+            "with_img_desc = [c for c in chunks if (c.get('image_description_text') or '').strip()]\n"
+            "with_thumbs = [c for c in chunks if c.get('image_evidence')]\n"
+            "print('chunks carrying merged image_description_text:', len(with_img_desc))\n"
+            "print('chunks with figure thumbnails (image_evidence):', len(with_thumbs))\n\n"
+            "# The merged visual summary is document-level, so it is identical across chunks -\n"
+            "# print it once to see the Image Analysis captions that were stitched together.\n"
+            "print('\\nDocument-level visual summary (Image Analysis captions):')\n"
+            "print(' ', (with_img_desc[0]['image_description_text'] if with_img_desc else '(none)'))\n\n"
+            "# Per-page figure thumbnails attached by the parser.\n"
             "pd.DataFrame([\n"
             "    {\n"
             "        'section': ' > '.join(c.get('section_path') or []) or '(root)',\n"
             "        'pages': c.get('page_numbers'),\n"
-            "        'image_description': (c.get('image_description_text') or '')[:180],\n"
+            "        'figures_on_page': len(c.get('image_evidence') or []),\n"
             "    }\n"
-            "    for c in with_img[:6]\n"
+            "    for c in with_thumbs[:8]\n"
             "])"
         ),
-        md("## Step 4 \u2014 Hybrid vs Agentic on a visual question\n\nHybrid reflects the merged image descriptions; Agentic additionally reaches the OCR text in the enrichment index."),
+        md(
+            "## Step 4 \u2014 Hybrid vs Agentic on a visual question\n\n"
+            "**Hybrid** now benefits directly: the merged `image_description_text` is part of every canonical chunk, so "
+            "visual vocabulary (\u201cconstruction site\u201d, \u201cchart\u201d) is searchable. **Agentic** can additionally "
+            "consult the Search-managed enrichment index, where the *full* per-image caption and OCR collections live, "
+            "and tends to assemble more cross-section citations."
+        ),
         code(
             f"QV = {Q_VISUAL!r}\n\n"
-            "print('--- HYBRID (sees image descriptions) ---')\n"
+            "print('--- HYBRID (canonical chunk index, now carries merged captions) ---')\n"
             "resp_hybrid = lab.ask(QV, job=job, retrieval_mode='hybrid', record_as='lab06_visual_hybrid')\n"
             "lab.show_answer(resp_hybrid, max_citations=4)"
         ),
         code(
-            "print('--- AGENTIC (adds OCR from enrichment index) ---')\n"
+            "print('--- AGENTIC (also reads the enrichment index: full captions + OCR) ---')\n"
             "resp_agentic = lab.ask(QV, job=job, retrieval_mode='agentic', record_as='lab06_visual_agentic')\n"
             "lab.show_answer(resp_agentic, max_citations=6)"
         ),
         md(
             "## Takeaways\n\n"
-            "- Image-analysis descriptions are merged to canonical chunks, so **Hybrid can already reflect visual evidence**.\n"
-            "- OCR text and detected language are enrichment-index-only, so **Agentic surfaces evidence the direct modes cannot**.\n"
-            "- For diagram-heavy documents, compare Hybrid and Agentic to see the full benefit of visual + NLP enrichment.\n\n"
+            "- With the output field mappings pointed at the per-image nodes and drilled into `captions/*/text`, "
+            "`OcrSkill` and `ImageAnalysisSkill` now produce **real retrievable text** - the enrichment index holds the "
+            "full per-image caption + OCR collections, and a merged summary lands on every canonical chunk.\n"
+            "- **Verify** the signal: inspect the captions and `image_evidence` thumbnails rather than assuming. Caption "
+            "quality is document-dependent - engineering diagrams give generic captions and sparse OCR.\n"
+            "- Hybrid gains the merged visual summary; Agentic additionally taps the full caption/OCR collections in the "
+            "enrichment index.\n"
+            "- `ENABLE_IMAGE_UNDERSTANDING=true` is a separate, optional lane that adds richer **per-figure Foundry "
+            "vision captions** (at extra cost) on top of the built-in Image Analysis signal.\n\n"
             "Next: **Lab 07** focuses on agentic retrieval mechanics (planning, subqueries, grounded synthesis)."
         ),
     ]
@@ -408,7 +446,155 @@ def build_lab08() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Lab 09 - Comparison / summary
+# Lab 09 - Multi-source knowledge routing
+# --------------------------------------------------------------------------- #
+
+Q_AI = "What does the report forecast about generative AI adoption trends and the future of the technology?"
+Q_EXC = "What groundwater control measures are recommended to support a deep excavation?"
+Q_COMPARE = "Compare how risk and forecasting are treated across the two indexes."
+
+
+def build_lab_multi_source() -> None:
+    cells = [
+        md(
+            "# Lab 09 \u00b7 Multi-Source Knowledge Routing (Notebook Walkthrough)\n\n"
+            "**Concept.** A real assistant rarely searches a single corpus. This lab adds a **second, separate index** "
+            "on a completely different topic \u2014 *the future of generative AI* \u2014 next to the deep-excavation engineering "
+            "corpus the earlier labs built. With two indexes registered as Azure AI Search **knowledge sources**, the "
+            "knowledge base decides, per question, **which index (or indexes) to search**.\n\n"
+            "You will see three routing outcomes:\n"
+            "1. an **AI-trends** question routed to the AI-trends index only,\n"
+            "2. an **excavation** question routed to the engineering index only,\n"
+            "3. a **compare** question fanned out across **both** indexes.\n\n"
+            "> Prerequisite: the second source must be registered before you start. Set "
+            "`AZURE_SEARCH_EXTRA_SOURCES_JSON` in your `.env` (see the lab doc), then restart the app. The app "
+            "auto-creates the `ai-trends-index` on first ingest \u2014 you do not have to create it by hand."
+        ),
+        md("## Step 1 \u2014 Bootstrap"),
+        code(SETUP),
+        md(
+            "## Step 2 \u2014 Confirm the second knowledge source is registered\n\n"
+            "`AZURE_SEARCH_EXTRA_SOURCES_JSON` is parsed at startup into `settings.azure_search_extra_sources`. If the "
+            "list below is empty, set the variable in `.env` and restart the kernel before continuing."
+        ),
+        code(
+            "from backend.core.config import settings\n"
+            "extra = [(s.knowledge_source_name, s.index_name) for s in settings.azure_search_extra_sources]\n"
+            "print('Extra knowledge sources:', extra or 'NONE \u2014 set AZURE_SEARCH_EXTRA_SOURCES_JSON and restart')\n"
+            "for s in settings.azure_search_extra_sources:\n"
+            "    print(' route_keywords:', s.route_keywords)\n"
+            "    print(' assignment_keywords:', s.assignment_keywords)"
+        ),
+        md(
+            "## Step 3 \u2014 Ingest both corpora\n\n"
+            "The engineering corpus already exists from the earlier labs; the AI-trends PDF is ingested into the "
+            "**separate** `ai-trends-index`. Ingest-time routing reads the document's name and section headings and "
+            "matches them against each source's `assignment_keywords` \u2014 the filename tokens `future` and `trends` send "
+            "this document to the AI-trends source. Both runs reuse cached results when available."
+        ),
+        code(
+            "ai_job = lab.ingest(pdf_path='data/ai-future-trends.pdf', skill_profile='genai_enrichment', reuse=True)\n"
+            "try:\n"
+            "    exc_job = lab.ingest(skill_profile='genai_enrichment', reuse=True)\n"
+            "except FileNotFoundError:\n"
+            "    # The engineering corpus was already ingested by earlier labs; reuse it without the source file.\n"
+            "    exc_job = lab.find_existing_job(skill_profile_id='genai_enrichment',\n"
+            "                                    file_name='Deep Excavation Design and Construction.pdf')\n\n"
+            "ai_diag = ai_job.publish_status.diagnostics or {}\n"
+            "exc_diag = (exc_job.publish_status.diagnostics or {}) if exc_job else {}\n"
+            "print('Excavation doc ->', exc_diag.get('index_name'))\n"
+            "print('AI-trends doc  ->', ai_diag.get('index_name'),\n"
+            "      '| assignment_mode:', ai_diag.get('assignment_mode'),\n"
+            "      '| matched:', ai_diag.get('assignment_matches'))\n"
+            "print('All publishable indexes:', ai_diag.get('index_names'))"
+        ),
+        md(
+            "## Step 4 \u2014 Preview routing *before* searching\n\n"
+            "`route_preview` runs the same knowledge-source routing the live retrieve path uses, but stops before "
+            "issuing any request \u2014 so it is instant and free. Watch the `routing_mode` and the indexes it selects for "
+            "each question."
+        ),
+        code(
+            f"Q_AI = {Q_AI!r}\n"
+            f"Q_EXC = {Q_EXC!r}\n"
+            f"Q_COMPARE = {Q_COMPARE!r}\n\n"
+            "import pandas as pd\n\n"
+            "rows = []\n"
+            "for label, q in [('AI trends', Q_AI), ('Excavation', Q_EXC), ('Compare', Q_COMPARE)]:\n"
+            "    rp = lab.route_preview(q)\n"
+            "    rows.append({\n"
+            "        'question': label,\n"
+            "        'routing_mode': rp['routing_mode'],\n"
+            "        'selected_indexes': ', '.join(rp['selected_search_indexes']),\n"
+            "        'matched_terms': '; '.join(\n"
+            "            f\"{idx}:{terms}\" for idx, terms in rp['matched_terms_by_index'].items() if terms\n"
+            "        ),\n"
+            "    })\n"
+            "pd.DataFrame(rows)"
+        ),
+        md(
+            "### Read the routing table\n\n"
+            "- **AI trends** \u2192 `keyword_routed` to the **AI-trends index** because the question matched that source's "
+            "`route_keywords` (trends, future, forecast, generative\u2026).\n"
+            "- **Excavation** \u2192 `keyword_routed` to the **primary engineering index** \u2014 the term *excavation* matches "
+            "the corpus published there.\n"
+            "- **Compare** \u2192 `cross_source_intent`: compare/across language tells the router to query **both** indexes "
+            "so the answer can draw from each."
+        ),
+        md(
+            "## Step 5 \u2014 Prove it: hybrid search shows which index served each hit\n\n"
+            "No `doc_ids` are pinned, so the **router** (not a manual selection) decides the scope. Each hit carries the "
+            "index it came from."
+        ),
+        code(
+            "hits, diag = lab.multi_source_search(Q_AI, retrieval_mode='hybrid', top=5)\n"
+            "print('routing_mode:', diag.get('routing_mode'), '| indexes:', diag.get('selected_search_indexes'))\n"
+            "pd.DataFrame(hits)"
+        ),
+        code(
+            "hits, diag = lab.multi_source_search(Q_EXC, retrieval_mode='hybrid', top=5)\n"
+            "print('routing_mode:', diag.get('routing_mode'), '| indexes:', diag.get('selected_search_indexes'))\n"
+            "pd.DataFrame(hits)"
+        ),
+        md(
+            "Each question's hits come **only** from the relevant index \u2014 the AI question never pulls excavation "
+            "chunks, and vice versa. That isolation is what keeps grounded answers on-topic in a multi-corpus assistant."
+        ),
+        md(
+            "## Step 6 \u2014 A grounded answer that picks the right source automatically\n\n"
+            "`ask_corpus` runs a full chat turn in `auto` corpus mode \u2014 the knowledge base routes across every ready "
+            "corpus, exactly like the deployed assistant. The AI question is answered from the AI-trends index."
+        ),
+        code(
+            "resp = lab.ask_corpus(Q_AI, retrieval_mode='agentic')\n"
+            "lab.show_answer(resp, max_citations=4)"
+        ),
+        md("## Step 7 — The cross-source question is routed to both indexes\n\n"
+           "Routing fans the query out across **both** indexes (see Step 4). The planner then grounds the synthesized "
+           "answer in whichever retrieved chunks are most relevant — so the citations may lean toward one corpus even "
+           "though both were searched."),
+        code(
+            "resp = lab.ask_corpus(Q_COMPARE, retrieval_mode='agentic')\n"
+            "lab.show_answer(resp, max_citations=6)"
+        ),
+        md(
+            "## Takeaways\n\n"
+            "- A knowledge base can reference **multiple knowledge sources**, each backed by its **own index**.\n"
+            "- **Ingest-time** routing (`assignment_keywords`) decides which index a document lands in; **query-time** "
+            "routing (`route_keywords`, compare-intent, auto-broadcast) decides which index answers a question.\n"
+            "- Routing modes: `keyword_routed` (a source's hints matched), `cross_source_intent` (compare/across "
+            "language \u2192 all sources), `broad_auto` (no hint matched but few enough sources to fan out), "
+            "`primary_default` (fall back to the main index).\n"
+            "- Tune `route_keywords` per source and `AZURE_SEARCH_AUTO_BROADCAST_LIMIT` to balance precision against "
+            "recall as you add more corpora.\n\n"
+            "Next: the **comparison notebook** lays every retrieval method side by side."
+        ),
+    ]
+    write("lab-09-multi-source-routing.ipynb", cells)
+
+
+# --------------------------------------------------------------------------- #
+# Lab 10 - Comparison / summary
 # --------------------------------------------------------------------------- #
 
 def build_comparison() -> None:
@@ -494,7 +680,7 @@ def build_comparison() -> None:
             "adds retrievable signal, with the biggest gains showing up on conceptual and diagram-grounded questions."
         ),
     ]
-    write("lab-09-comparison-summary.ipynb", cells)
+    write("lab-10-comparison-summary.ipynb", cells)
 
 
 if __name__ == "__main__":
@@ -504,5 +690,6 @@ if __name__ == "__main__":
     build_lab06()
     build_lab07()
     build_lab08()
+    build_lab_multi_source()
     build_comparison()
     print("ALL_NOTEBOOKS_BUILT")

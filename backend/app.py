@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 import shutil
 
@@ -31,6 +32,8 @@ from backend.services.sample_documents import (
 from backend.services.workshop_profiles import build_workshop_profile_summary, build_workshop_skill_profiles
 
 configure_logging(settings.log_level)
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title=settings.app_name, version="0.1.0")
 app.add_middleware(
@@ -122,6 +125,33 @@ def _available_retrieval_modes() -> list[str]:
     return ordered
 
 
+def _is_repo_managed_path(path: Path) -> bool:
+    """True only when ``path`` lives inside a directory this app owns.
+
+    Notebook-driven ingestion records the *original* source path (e.g. a file in
+    the user's Downloads folder) as ``stored_path`` instead of copying it into
+    the repo. Deleting a job must never remove source files that live outside the
+    application's managed directories, so artifact cleanup is restricted to these
+    roots.
+    """
+    try:
+        resolved = path.resolve()
+    except Exception:
+        return False
+    managed_roots = [
+        settings.uploads_dir,
+        settings.artifacts_dir,
+        settings.data_dir,
+    ]
+    for root in managed_roots:
+        try:
+            resolved.relative_to(root.resolve())
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 def _delete_job_artifacts(job: JobRecord) -> None:
     intermediate_payload = None
     if job.intermediate_path and Path(job.intermediate_path).exists():
@@ -160,6 +190,11 @@ def _delete_job_artifacts(job: JobRecord) -> None:
         if not raw_path:
             continue
         path = Path(raw_path)
+        # Never delete source files outside the repo's managed directories. The
+        # notebook ingestion path stores the original (e.g. Downloads) location
+        # as stored_path, and that file must be treated as read-only reference.
+        if not _is_repo_managed_path(path):
+            continue
         if path.exists() and path.is_file():
             path.unlink()
 
@@ -396,8 +431,17 @@ def get_document_figure(doc_id: str, artifact_id: str) -> Response:
     if blob_name and settings.azure_blob_storage_enabled:
         blob_store = build_blob_artifact_store()
         if blob_store is not None:
-            content, content_type = blob_store.download_bytes(blob_name)
-            return Response(content=content, media_type=content_type)
+            try:
+                content, content_type = blob_store.download_bytes(blob_name)
+                return Response(content=content, media_type=content_type)
+            except Exception as exc:
+                # Blob storage can be unreachable (e.g. the storage account
+                # firewall is locked down). Fall back to the locally cached
+                # artifact instead of returning a broken image to the portal.
+                logger.warning(
+                    "figure blob download failed; falling back to local artifact",
+                    extra={"context": {"blob_name": blob_name, "error": str(exc)}},
+                )
 
     artifact_path = figure.get("artifact_path")
     if artifact_path and Path(artifact_path).exists():

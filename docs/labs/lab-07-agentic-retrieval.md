@@ -6,7 +6,7 @@ Switch from direct search modes to the official Azure AI Search knowledge-base r
 
 This lab does **not** introduce a new ingestion profile. It uses the best corpus produced in Labs 05 or 06 and changes the retrieval method to `Agentic retrieval`.
 
-> Preview feature. Knowledge sources, knowledge bases, and the `retrieve` action are preview capabilities in Azure AI Search and run on a preview REST API version. They are provided without an SLA and are not recommended for production workloads. Treat this lab as a forward-looking capability demo. Internally, agentic retrieval runs each subquery as a hybrid query and reranks it with the semantic ranker, so the same semantic ranker availability and billing caveats from Lab 04 apply here too. Azure AI Search bills agentic retrieval by retrieval tokens, and the planning and answer-synthesis LLM calls are billed separately on Azure OpenAI.
+> GA, with a preview surface in this workshop. The core agentic retrieval flow - knowledge bases, indexed knowledge sources, and the `retrieve` action - is **generally available in the `2026-04-01` REST API** for programmatic access. This app pins `2026-05-01-preview` (see `AZURE_SEARCH_API_VERSION`) to exercise the newest capabilities (multi-source routing, semantic chunking, AI image descriptions); those preview-only features have no SLA and are not recommended for production. The Azure portal and Microsoft Foundry portal also expose agentic retrieval as preview-only. Internally, agentic retrieval runs each subquery as a hybrid query and reranks it with the semantic ranker, so the same semantic-ranker availability and billing caveats from Lab 04 apply. Azure AI Search bills agentic retrieval by retrieval tokens; the planning and answer-synthesis LLM calls are billed separately on Azure OpenAI.
 
 ## Questions This Lab Answers
 
@@ -113,7 +113,7 @@ payload = {
 | --- | --- | --- |
 | `AZURE_SEARCH_LLM_DEPLOYMENT` | Model used by the knowledge base for planning and answer synthesis. | Point to your supported planning model. |
 | `AZURE_SEARCH_ENABLE_ANSWER_SYNTHESIS` | Synthesized answer versus raw extractive retrieval. | Toggle on and off to contrast the output styles. |
-| `AZURE_SEARCH_LLM_REASONING_EFFORT` | How much effort the retrieve path spends on planning. | Compare `low` versus `medium`. |
+| `AZURE_SEARCH_LLM_REASONING_EFFORT` | How much effort the retrieve path spends on planning. | `low` (the default) and `medium` send the query to the LLM for subquery planning and knowledge-source selection; `minimal` skips planning and issues the query directly. Compare `minimal` vs `low` vs `medium`. |
 | `AZURE_SEARCH_EXTRA_SOURCES_JSON` | Additional knowledge sources for cross-index routing. | Use when you want a multi-corpus lab run. |
 | `AZURE_SEARCH_AUTO_BROADCAST_LIMIT` | How aggressively the app fans out across configured knowledge sources. | Raise it if you want broader agentic routing demos. |
 

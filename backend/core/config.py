@@ -331,7 +331,11 @@ class Settings:
     azure_storage_account_key: str = os.getenv("AZURE_STORAGE_ACCOUNT_KEY", "")
     azure_storage_container: str = os.getenv("AZURE_STORAGE_CONTAINER", "document-figure-artifacts")
     enable_parser_figure_extraction: bool = _env_flag("ENABLE_PARSER_FIGURE_EXTRACTION", False)
-    enable_image_understanding: bool = _env_flag("ENABLE_IMAGE_UNDERSTANDING", True)
+    # Per-figure Foundry vision descriptions are disabled by default: image
+    # descriptions for retrieval come from the Search ImageAnalysisSkill
+    # (document-level, Prompt-Shields-independent). Opt back in with
+    # ENABLE_IMAGE_UNDERSTANDING=true only if you want per-figure citation captions.
+    enable_image_understanding: bool = _env_flag("ENABLE_IMAGE_UNDERSTANDING", False)
     parser_figure_max_artifacts: int = int(os.getenv("PARSER_FIGURE_MAX_ARTIFACTS", "80"))
     max_figure_image_pixels: int = int(os.getenv("MAX_FIGURE_IMAGE_PIXELS", "40000000"))
     max_figure_image_dimension: int = int(os.getenv("MAX_FIGURE_IMAGE_DIMENSION", "4096"))

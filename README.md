@@ -190,7 +190,8 @@ Run the labs in order.
 7. [Lab 06 - Visual And NLP Enrichment](./docs/labs/lab-06-image-and-nlp-enrichment.md)
 8. [Lab 07 - Agentic Retrieval](./docs/labs/lab-07-agentic-retrieval.md)
 9. [Lab 08 - Optional Content Understanding Upgrade](./docs/labs/lab-08-optional-content-understanding-skill-upgrade.md)
-10. [Lab 09 - Troubleshooting And Verification](./docs/labs/lab-09-troubleshooting-and-verification.md)
+10. [Lab 09 - Multi-Source Knowledge Routing](./docs/labs/lab-09-multi-source-knowledge-routing.md)
+11. [Lab 10 - Troubleshooting And Verification](./docs/labs/lab-10-troubleshooting-and-verification.md)
 
 ### Lab matrix
 
@@ -202,6 +203,7 @@ Run the labs in order.
 | 06 | `visual_nlp` | `hybrid` | OCR, image analysis, language detection | diagram text, image descriptions, richer evidence |
 | 07 | keep the best prior profile | `agentic` | switch from direct search to knowledge-base retrieval | subqueries, decomposition, grounded synthesis |
 | 08 | `content_understanding` | `hybrid`, `agentic` | Search-managed semantic extraction alternative | chunk boundary quality and structure handling |
+| 09 | `genai_enrichment` (+ extra source) | `hybrid`, `agentic` | a second knowledge source on a new topic | per-question routing across multiple indexes |
 
 ## Executable Lab Notebooks
 
@@ -210,7 +212,7 @@ per lab plus a final comparison notebook — that drive the **same backend pipel
 the UI runs**, in-process, against live Azure AI Search. They are committed with
 real outputs so you can read the ingestion stats, retrieval hits, and grounded
 answers without running anything. See the [notebooks README](./notebooks/README.md)
-for details. The final [comparison notebook](./notebooks/lab-09-comparison-summary.ipynb)
+for details. The final [comparison notebook](./notebooks/lab-10-comparison-summary.ipynb)
 puts full-text, vector, hybrid, and agentic retrieval side-by-side on the same two
 questions to make the trade-offs concrete.
 

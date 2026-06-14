@@ -79,6 +79,85 @@ class PipelineMessageCleanupTests(unittest.TestCase):
         self.assertEqual(len(chunks[1].image_evidence), 1)
         self.assertEqual(chunks[1].image_evidence[0]["artifact_id"], "fig-2")
 
+    def test_chunk_enrichment_merges_figure_descriptions_into_image_description_text(self) -> None:
+        pipeline = IngestionPipeline()
+        intermediate = IntermediateDocument(
+            doc_id="doc-2",
+            source_name="report.pdf",
+            source_path="C:/temp/report.pdf",
+            format="pdf",
+            complexity="complex",
+            parser_path="azure_document_intelligence",
+            page_count=4,
+            metadata={
+                "figure_artifacts": [
+                    {"artifact_id": "fig-1", "page_number": 2, "description": "Braced excavation cross-section."},
+                    {"artifact_id": "fig-2", "page_number": 2, "description": "Strut and waler layout."},
+                    {"artifact_id": "fig-3", "page_number": 3, "description_error": "content_filter"},
+                ]
+            },
+        )
+        figure_chunk = ChunkRecord(
+            chunk_id="chunk-figure",
+            doc_id="doc-2",
+            source_name="report.pdf",
+            checksum="figure",
+            clean_text="Discussion of the support system on page 2.",
+            token_estimate=12,
+            page_numbers=[2],
+        )
+        text_only_chunk = ChunkRecord(
+            chunk_id="chunk-text",
+            doc_id="doc-2",
+            source_name="report.pdf",
+            checksum="text",
+            clean_text="Narrative text with no nearby figure.",
+            token_estimate=12,
+            page_numbers=[4],
+        )
+
+        chunks = pipeline._enrich_chunks(intermediate, [figure_chunk, text_only_chunk])
+
+        self.assertEqual(
+            chunks[0].image_description_text,
+            "Braced excavation cross-section. Strut and waler layout.",
+        )
+        self.assertIsNone(chunks[1].image_description_text)
+
+    def test_chunk_enrichment_preserves_existing_skillset_image_description(self) -> None:
+        pipeline = IngestionPipeline()
+        intermediate = IntermediateDocument(
+            doc_id="doc-3",
+            source_name="report.pdf",
+            source_path="C:/temp/report.pdf",
+            format="pdf",
+            complexity="complex",
+            parser_path="azure_document_intelligence",
+            page_count=4,
+            metadata={
+                "figure_artifacts": [
+                    {"artifact_id": "fig-1", "page_number": 2, "description": "Per-figure description."},
+                ]
+            },
+        )
+        chunk = ChunkRecord(
+            chunk_id="chunk-1",
+            doc_id="doc-3",
+            source_name="report.pdf",
+            checksum="c1",
+            clean_text="Page 2 content.",
+            token_estimate=12,
+            page_numbers=[2],
+            image_description_text="Skillset-provided document image description.",
+        )
+
+        chunks = pipeline._enrich_chunks(intermediate, [chunk])
+
+        self.assertEqual(
+            chunks[0].image_description_text,
+            "Skillset-provided document image description.",
+        )
+
 
 class ActiveSkillProfilePinningTests(unittest.TestCase):
     def test_context_manager_pins_and_restores_global_profile(self) -> None:

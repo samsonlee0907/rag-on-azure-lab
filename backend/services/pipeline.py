@@ -323,7 +323,32 @@ class IngestionPipeline:
                         if page_number is None or page_number in scoped_pages:
                             related_figures.append(figure)
                 chunk.image_evidence = related_figures[:4]
+                self._apply_figure_image_descriptions(chunk)
         return chunks
+
+    @staticmethod
+    def _apply_figure_image_descriptions(chunk: ChunkRecord) -> None:
+        """Merge per-figure vision descriptions onto the chunk's searchable field.
+
+        Parser figure extraction stores each figure's GPT vision description on
+        ``chunk.image_evidence[*]["description"]``, but the canonical
+        ``image_description_text`` field (which ``full_text`` / ``vector`` /
+        ``hybrid`` retrieval and the lab metrics read) was never populated from
+        it. We only fill it when the Blob skillset enrichment lane has not
+        already supplied a document-level description, so hybrid ingestion keeps
+        its richer Search-managed value.
+        """
+        if chunk.image_description_text:
+            return
+        descriptions: list[str] = []
+        for figure in chunk.image_evidence:
+            if not isinstance(figure, dict):
+                continue
+            description = str(figure.get("description") or "").strip()
+            if description and description not in descriptions:
+                descriptions.append(description)
+        if descriptions:
+            chunk.image_description_text = " ".join(descriptions)
 
     def _normalize_ingestion_mode(self, ingestion_mode: str | None) -> str:
         allowed_modes = {"app_managed", "hybrid_blob_skillset"}

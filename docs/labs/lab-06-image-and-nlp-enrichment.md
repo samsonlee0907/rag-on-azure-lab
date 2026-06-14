@@ -40,9 +40,9 @@ Use the same diagram-heavy file. On the upload screen, set the **Skill Profile**
 
 ## Step 4 - Use `Hybrid` retrieval mode
 
-This lab keeps the retrieval mode fixed on `Hybrid` so the audience can isolate the effect of the new skills.
+This lab keeps the retrieval mode fixed on `Hybrid` first, then compares with `Agentic`, so the audience can isolate the effect of the new skills.
 
-> **The visual-NLP fields split across two indexes — and that determines which retrieval modes can see them.** During enrichment, the **image-analysis descriptions** (`image_description_text`) are merged back onto the canonical chunks, so `Hybrid` / `Vector` / `Full text` *can* surface image descriptions directly. The **OCR text** and **detected-language** signals are *not* merged onto canonical chunks — they live only in the Search-managed enrichment index (`...-visual-nlp`), which is surfaced by **Agentic retrieval** as a separate source. So: run the question in `Hybrid` to see image descriptions take effect, then run the same question in **Agentic** mode to bring in the OCR text the direct modes cannot reach. The lesson is that *which* visual signal influences the answer depends on the merge contract, not just on which skill ran.
+> **Where each visual/NLP signal lands.** The three skills run inside the Blob skillset. `OcrSkill` and `ImageAnalysisSkill` run at the per-image context (`/document/normalized_images/*`), so their outputs land *under that path* - the indexer output field mappings read `/document/normalized_images/*/...`, and because `description` is a complex `{tags, captions}` object the mapping drills into `captions/*/text` for the human-readable caption sentences. These populate the **Search-managed enrichment index** (`...-visual-nlp`), which **Agentic** retrieval can draw on. The app then merges a **document-level `image_description_text`** (the first several captions) back onto every **canonical chunk**, so `Full text` / `Vector` / `Hybrid` also gain a visual signal. The parser additionally attaches **figure thumbnails** (`image_evidence`) to the chunks on a figure's page so the UI shows grounded visuals. Those thumbnails come from **rendering each page and cropping the figure region** rather than pulling the raw embedded image: engineering PDFs often draw figures as 1-bit image masks / soft-masked (SMask) stencils whose paint colour lives in the page content stream, so the raw bitmap is solid black - rendering composites them faithfully, and the same path also captures **vector-drawn charts** (analyst decks) that carry no embedded image at all. **Caption quality is document-dependent:** Image Analysis 3.2 returns descriptive but generic captions ("a construction site with cranes and buildings", "engineering drawing") and OCR on vector-drawn diagrams yields fragmentary text ("17 07 2017"). The lesson is to *verify what actually landed* (the chunk metrics and enrichment fields) rather than assume.
 
 ## Step 5 - Ask image-aware comparison prompts
 
@@ -73,9 +73,10 @@ Keep them out of the base workshop until the audience has seen the core visual/N
 ## Success Criteria
 
 - the document reaches `ready`
-- enrichment metadata includes OCR or image-analysis outputs
 - the enrichment index recorded in the job ends with `-visual-nlp`
-- hybrid retrieval shows stronger evidence for diagram- or figure-oriented questions than the previous lab
+- `LanguageDetectionSkill` records a detected language (e.g. `en`) and the parser attaches figure thumbnails (`image_evidence`) to figure-bearing chunks
+- `OcrSkill` and `ImageAnalysisSkill` produce real text: the `-visual-nlp` enrichment index holds the per-image caption and OCR collections, and `chunks_with_image_description` is **non-zero** because the merged document-level `image_description_text` lands on every canonical chunk
+- you can explain the result honestly: captions are descriptive but generic and OCR on vector diagrams is fragmentary, so judge the *quality* of the signal, not just its presence
 
 ## Code Walkthrough
 
@@ -97,26 +98,35 @@ WorkshopSkillProfile(
 - This is the best lab for documents with diagrams, scanned pages, screenshots, or mixed-language content.
 - The value is easiest to see on the same document used in earlier labs.
 
-These are the actual built-in skills added by the Search skillset:
+These are the actual built-in skills added by the Search skillset, with the output mappings that make their results retrievable:
 
 ```python
 # backend/services/search_skillset_enrichment.py
 def _build_ocr_skill(self) -> dict[str, Any]:
-    return {"@odata.type": "#Microsoft.Skills.Vision.OcrSkill", "context": "/document/normalized_images/*"}
+    return {
+        "@odata.type": "#Microsoft.Skills.Vision.OcrSkill",
+        "context": "/document/normalized_images/*",
+        "outputs": [{"name": "text", "targetName": "ocr_text_chunks"}],
+    }
 
 def _build_image_analysis_skill(self) -> dict[str, Any]:
     return {
         "@odata.type": "#Microsoft.Skills.Vision.ImageAnalysisSkill",
+        "context": "/document/normalized_images/*",
         "visualFeatures": ["tags", "description"],
+        # description is a complex {tags, captions} object
+        "outputs": [{"name": "description", "targetName": "image_analysis"}],
     }
 
-def _build_language_detection_skill(self) -> dict[str, Any]:
-    return {"@odata.type": "#Microsoft.Skills.Text.LanguageDetectionSkill", "context": "/document"}
+# Indexer output field mappings read the per-image nodes and drill into caption text:
+#   /document/normalized_images/*/ocr_text_chunks                -> ocr_text_chunks
+#   /document/normalized_images/*/image_analysis/captions/*/text -> image_description_chunks
 ```
 
-- `OcrSkill` extracts text from normalized images.
-- `ImageAnalysisSkill` adds image tags and descriptions.
-- `LanguageDetectionSkill` helps explain why certain language-aware enrichments or downstream prompts behave differently.
+- `OcrSkill` extracts raster text from normalized images into `ocr_text_chunks`.
+- `ImageAnalysisSkill` emits a complex `description` object; the mapping drills into `captions/*/text` so the caption sentences become `image_description_chunks`.
+- `LanguageDetectionSkill` runs at `/document` context and records the detected language.
+- Getting the **mapping paths** right is the whole game: a skill at `/document/normalized_images/*` context writes its output *under that path*, so a mapping that reads `/document/<output>` silently captures nothing.
 
 One useful comparison in this lab is parser-side figure handling versus Search-side visual enrichment:
 
@@ -133,13 +143,15 @@ if scoped_pages and len(scoped_pages) <= MAX_DIRECT_CHUNK_IMAGE_PAGE_SPAN:
 - The Search skillset separately adds OCR and image-description signals.
 - This lab is about showing that those are complementary, not duplicate, stages.
 
+> **How the parser captures faithful figures.** Figure thumbnails are produced by **rendering each PDF page and cropping the figure region** (`_extract_pdf_figures_rendered` in [backend/services/parsers.py](../../backend/services/parsers.py)), not by pulling the raw embedded image. Engineering PDFs frequently draw figures as 1-bit image masks or soft-masked (SMask) stencils whose paint colour lives in the page content stream, so the raw XObject is a solid-black bitmap; rendering composites the page faithfully. The same render path has a vector fallback that clusters native chart geometry, so **vector-drawn charts** in analyst decks (which carry no embedded image at all) are still captured as thumbnails.
+
 ## Configuration Knobs
 
 | Variable | What it controls | Good workshop variation |
 | --- | --- | --- |
 | `WORKSHOP_SKILL_PROFILE` | Activates this profile. | `visual_nlp` |
 | `ENABLE_PARSER_FIGURE_EXTRACTION` | Turns on parser-side figure extraction for a side-by-side comparison with Search-side visual skills. | Set `true` if you want chunk-linked figure artifacts in the portal. |
-| `ENABLE_IMAGE_UNDERSTANDING` | Parser-side figure understanding. | Keep `true` if you want richer figure metadata. |
+| `ENABLE_IMAGE_UNDERSTANDING` | Optional per-figure Foundry vision captions for citation thumbnails. Image descriptions for retrieval already come from the Search `ImageAnalysisSkill` (mapped via `captions/*/text`), so this is a separate, richer lane that is off by default to avoid Prompt-Shields throttling during burst ingestion. | Leave `false`; set `true` only if you want per-figure Foundry caption metadata on top of the built-in signal, and accept occasional content-filter retries. |
 | `PARSER_FIGURE_MAX_ARTIFACTS` | Caps how many figure artifacts the parser will process from one PDF. | Lower it for very large handbooks so the lab finishes faster. |
 | `MAX_FIGURE_IMAGE_PIXELS` | Guards oversized extracted images. | Lower it if you want to demonstrate safety limits. |
 | `MAX_FIGURE_IMAGE_DIMENSION` | Caps large figure dimensions. | Lower it if image-heavy PDFs are causing trouble. |

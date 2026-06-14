@@ -256,9 +256,11 @@ def ingest(
 
     pipeline, job_store, _ = _backend()
     pdf_path = Path(pdf_path)
-    if not pdf_path.exists():
-        raise FileNotFoundError(f"Source PDF not found: {pdf_path}")
 
+    # Reuse is resolved by profile + file *name*, so a cached run can be replayed
+    # offline even when the original source file is no longer on this machine
+    # (e.g. re-executing a committed notebook on a fresh clone). Only require the
+    # file to exist when we actually have to ingest it.
     if reuse:
         existing = find_existing_job(skill_profile_id=skill_profile, file_name=pdf_path.name)
         if existing is not None:
@@ -269,6 +271,9 @@ def ingest(
                     "Pass reuse=False to force a fresh run."
                 )
             return existing
+
+    if not pdf_path.exists():
+        raise FileNotFoundError(f"Source PDF not found: {pdf_path}")
 
     job = pipeline.create_job_from_path(
         pdf_path,
@@ -340,6 +345,119 @@ def _doc_source_assignments(job) -> dict[str, str]:
             "knowledge_source_name", settings.azure_search_knowledge_source_name
         )
     }
+
+
+# --------------------------------------------------------------------------- #
+# Multi-source knowledge routing (Lab 09)
+# --------------------------------------------------------------------------- #
+
+def build_adapter():
+    """Return the live Azure AI Search adapter the app uses.
+
+    Lab 09 inspects the adapter's knowledge-source routing directly, so the
+    notebook can show *which* index the knowledge base decided to query for a
+    given question — and why — before any answer is synthesised.
+    """
+    _, _, build_foundry_adapter = _backend()
+    return build_foundry_adapter()
+
+
+def route_preview(question: str, *, include_enrichment: bool = False) -> dict[str, Any]:
+    """Show how the knowledge base would route ``question`` across indexes.
+
+    This calls the same ``_route_knowledge_sources`` logic the live retrieve
+    path uses, but stops *before* issuing any search request, so it is fast and
+    free. Returns a compact, notebook-friendly view of the decision: the routing
+    mode, the indexes that were selected, and the per-source terms that matched.
+    """
+    adapter = build_adapter()
+    if not hasattr(adapter, "_route_knowledge_sources"):
+        return {
+            "routing_mode": "local_preview",
+            "routing_reason": "Azure AI Search is not configured; multi-source routing is unavailable.",
+            "selected_search_indexes": [],
+            "matched_terms_by_index": {},
+        }
+    _, diagnostics = adapter._route_knowledge_sources(
+        question, include_enrichment=include_enrichment
+    )
+    matched_terms_by_index = {
+        detail["index_name"]: detail["matched_terms"]
+        for detail in diagnostics.get("knowledge_source_match_details", [])
+    }
+    return {
+        "question": question,
+        "routing_mode": diagnostics.get("routing_mode"),
+        "routing_reason": diagnostics.get("routing_reason"),
+        "available_search_indexes": diagnostics.get("available_search_indexes", []),
+        "selected_search_indexes": diagnostics.get("selected_search_indexes", []),
+        "matched_terms_by_index": matched_terms_by_index,
+        "multi_index_routing": diagnostics.get("multi_index_routing", False),
+    }
+
+
+def multi_source_search(
+    question: str,
+    *,
+    retrieval_mode: str = "hybrid",
+    top: int = 6,
+) -> list[dict[str, Any]]:
+    """Run a direct search the router scopes across *all* configured indexes.
+
+    No ``doc_ids`` are passed, so the knowledge-source router (not a manual
+    corpus pin) decides which index or indexes answer the question. Each hit
+    carries the index it came from, which is the whole point of the lab: you can
+    see the AI-trends questions land on the AI-trends index and the excavation
+    questions land on the primary index.
+    """
+    adapter = build_adapter()
+    payload = adapter.direct_search(question, retrieval_mode=retrieval_mode)
+    hits: list[dict[str, Any]] = []
+    for item in payload.get("results", [])[:top]:
+        hits.append(
+            {
+                "index": item.get("index_name"),
+                "knowledge_source": item.get("knowledgeSourceName"),
+                "score": round(float(item.get("@search.score", 0.0)), 4),
+                "source_doc": item.get("source_name"),
+                "snippet": (item.get("snippet") or item.get("clean_text") or "")[:200].strip(),
+            }
+        )
+    return hits, payload.get("diagnostics", {})
+
+
+def ask_corpus(
+    question: str,
+    *,
+    retrieval_mode: str = "agentic",
+    active_profile_id: str = "genai_enrichment",
+):
+    """Answer ``question`` over the whole workshop corpus (router picks sources).
+
+    Unlike :func:`ask`, this does not pin the query to one document. It runs the
+    app's chat turn in ``auto`` corpus mode so the knowledge base routes across
+    every ready corpus, mirroring a real multi-document assistant. ``active
+    profile_id`` aligns the agentic knowledge base with the profile the relevant
+    documents were ingested under (see :func:`active_profile`).
+    """
+    from backend.app import chat
+    from backend.domain.models import ChatTurnRequest
+
+    is_agentic = retrieval_mode.strip().lower() == "agentic"
+    if is_agentic:
+        _ensure_knowledge_base_for(active_profile_id)
+
+    def _do_chat():
+        with active_profile(active_profile_id):
+            return chat(
+                ChatTurnRequest(
+                    question=question,
+                    corpus_mode="auto",
+                    retrieval_mode=retrieval_mode,
+                )
+            )
+
+    return _run_with_kb_sync_retry(_do_chat, active_profile_id) if is_agentic else _do_chat()
 
 
 def retrieve(

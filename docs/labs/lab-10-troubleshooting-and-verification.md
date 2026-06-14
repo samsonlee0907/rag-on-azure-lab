@@ -1,4 +1,4 @@
-# Lab 09 - Troubleshooting And Verification
+# Lab 10 - Troubleshooting And Verification
 
 ## Goal
 

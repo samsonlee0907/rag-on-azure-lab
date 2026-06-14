@@ -4,6 +4,7 @@ pydantic
 requests
 python-multipart
 pypdf
+pypdfium2
 python-docx
 reportlab
 azure-storage-blob

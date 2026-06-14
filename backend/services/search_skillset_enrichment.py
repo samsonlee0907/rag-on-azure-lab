@@ -607,7 +607,10 @@ class AzureSearchSkillsetEnrichmentService:
             "defaultLanguageCode": "en",
             "visualFeatures": ["tags", "description"],
             "inputs": [{"name": "image", "source": "/document/normalized_images/*"}],
-            "outputs": [{"name": "description", "targetName": "image_description_chunks"}],
+            # `description` is a complex object {tags, captions}. Keep the whole node here;
+            # the indexer output field mapping drills into captions/*/text for retrievable
+            # sentences (a plain Collection(Edm.String) mapping of the object yields nothing).
+            "outputs": [{"name": "description", "targetName": "image_analysis"}],
         }
 
     def _build_language_detection_skill(self) -> dict[str, Any]:
@@ -794,11 +797,18 @@ class AzureSearchSkillsetEnrichmentService:
                 ]
             )
         if self._profile_uses_visual_nlp(active_profile):
+            # OCR and Image Analysis run at the per-image context (/document/normalized_images/*),
+            # so their enriched nodes live under that path - not at /document. Image Analysis
+            # emits a complex `description` object, so drill into captions/*/text for the
+            # human-readable caption sentences that make figure evidence retrievable.
             body["outputFieldMappings"].extend(
                 [
-                    {"sourceFieldName": "/document/ocr_text_chunks", "targetFieldName": "ocr_text_chunks"},
                     {
-                        "sourceFieldName": "/document/image_description_chunks",
+                        "sourceFieldName": "/document/normalized_images/*/ocr_text_chunks",
+                        "targetFieldName": "ocr_text_chunks",
+                    },
+                    {
+                        "sourceFieldName": "/document/normalized_images/*/image_analysis/captions/*/text",
                         "targetFieldName": "image_description_chunks",
                     },
                     {"sourceFieldName": "/document/detected_language", "targetFieldName": "detected_language"},

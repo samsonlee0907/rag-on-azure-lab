@@ -39,9 +39,39 @@ except Exception:  # pragma: no cover - optional dependency
     docx = None  # type: ignore[assignment]
 
 try:
-    from PIL import Image as PILImage
+    from PIL import Image as PILImage, ImageStat
 except Exception:  # pragma: no cover - optional dependency
     PILImage = None  # type: ignore[assignment]
+    ImageStat = None  # type: ignore[assignment]
+
+try:
+    import pypdfium2 as pdfium  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover - optional dependency
+    pdfium = None  # type: ignore[assignment]
+
+# Figure rendering parameters. Engineering PDFs frequently draw figures as 1-bit
+# image masks / soft-masked (SMask) stencils whose paint colour lives in the page
+# content stream, not in the embedded XObject. Pulling the raw XObject therefore
+# yields a solid-black bitmap, so we render the composited page region instead.
+_FIGURE_RENDER_DPI = 150.0
+_FIGURE_CLUSTER_GAP_PTS = 6.0
+_FIGURE_MIN_DIMENSION_PTS = 24.0
+_FIGURE_REGION_PADDING_PTS = 4.0
+
+# Vector-figure fallback. Business and analyst decks (e.g. slide-style reports)
+# draw charts as native vector graphics - hundreds of path/form objects with no
+# embedded raster image to anchor on. When a page has no raster figure region but
+# substantial vector drawing content, we cluster the vector object bounds into
+# chart regions and render those instead, so the chart still becomes a thumbnail.
+_FIGURE_VECTOR_OBJECT_THRESHOLD = 8
+_FIGURE_VECTOR_MIN_AREA_RATIO = 0.05
+_FIGURE_VECTOR_MIN_DIMENSION_PTS = 72.0
+_FIGURE_VECTOR_MAX_REGIONS_PER_PAGE = 2
+# A vector region that spans almost the entire page height or width is a template
+# band (text rail, page border, background panel), not a chart, so it is rejected.
+_FIGURE_VECTOR_MAX_EXTENT_RATIO = 0.95
+# pdfium page object type codes for vector drawing primitives (path, shading, form).
+_FIGURE_VECTOR_OBJECT_TYPES = (2, 4, 5)
 
 
 @dataclass(slots=True)
@@ -75,23 +105,14 @@ def _resampling_filter() -> object:
     return resampling.LANCZOS
 
 
-def _normalize_figure_image(
-    image: object,
+def _save_normalized_pil(
+    pil_image: object,
     artifact_base: Path,
+    *,
+    base_metadata: dict[str, object] | None = None,
 ) -> tuple[Path, dict[str, object]]:
-    original_name = str(getattr(image, "name", artifact_base.name))
-    original_suffix = Path(original_name).suffix.lower() or ".bin"
-    metadata: dict[str, object] = {"original_image_name": original_name}
-
-    pil_image = getattr(image, "image", None)
-    if PILImage is None or pil_image is None:
-        artifact_path = artifact_base.with_suffix(original_suffix)
-        artifact_path.write_bytes(getattr(image, "data", b""))
-        metadata["normalized_image"] = False
-        metadata["output_format"] = original_suffix.lstrip(".")
-        return artifact_path, metadata
-
-    normalized = pil_image.copy()
+    metadata: dict[str, object] = dict(base_metadata or {})
+    normalized = pil_image
     width, height = normalized.size
     metadata["original_width"] = width
     metadata["original_height"] = height
@@ -128,6 +149,312 @@ def _normalize_figure_image(
     return artifact_path, metadata
 
 
+def _normalize_figure_image(
+    image: object,
+    artifact_base: Path,
+) -> tuple[Path, dict[str, object]]:
+    original_name = str(getattr(image, "name", artifact_base.name))
+    original_suffix = Path(original_name).suffix.lower() or ".bin"
+    metadata: dict[str, object] = {"original_image_name": original_name}
+
+    pil_image = getattr(image, "image", None)
+    if PILImage is None or pil_image is None:
+        artifact_path = artifact_base.with_suffix(original_suffix)
+        artifact_path.write_bytes(getattr(image, "data", b""))
+        metadata["normalized_image"] = False
+        metadata["output_format"] = original_suffix.lstrip(".")
+        return artifact_path, metadata
+
+    return _save_normalized_pil(pil_image.copy(), artifact_base, base_metadata=metadata)
+
+
+def _cluster_boxes(
+    boxes: list[tuple[float, float, float, float]],
+    gap: float,
+) -> list[tuple[float, float, float, float]]:
+    """Merge image-object bounding boxes that sit within ``gap`` points of each
+    other into a single figure region, so a chart composed of many stencils is
+    captured as one thumbnail rather than dozens of fragments."""
+    count = len(boxes)
+    parent = list(range(count))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        parent[find(left)] = find(right)
+
+    def near(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> bool:
+        al, ab, ar, at = a
+        bl, bb, br, bt = b
+        return not (ar + gap < bl or br + gap < al or at + gap < bb or bt + gap < ab)
+
+    for i in range(count):
+        for j in range(i + 1, count):
+            if near(boxes[i], boxes[j]):
+                union(i, j)
+
+    groups: dict[int, list[float]] = {}
+    for i in range(count):
+        root = find(i)
+        left, bottom, right, top = boxes[i]
+        if root not in groups:
+            groups[root] = [left, bottom, right, top]
+        else:
+            existing = groups[root]
+            existing[0] = min(existing[0], left)
+            existing[1] = min(existing[1], bottom)
+            existing[2] = max(existing[2], right)
+            existing[3] = max(existing[3], top)
+    return [tuple(values) for values in groups.values()]  # type: ignore[misc]
+
+
+def _is_blank_image(image: object) -> bool:
+    """True when a rendered crop is essentially uniform white or black, which
+    indicates whitespace or a failed region rather than a real figure."""
+    if ImageStat is None:
+        return False
+    try:
+        stat = ImageStat.Stat(image.convert("RGB"))
+        mean = sum(stat.mean) / 3.0
+        spread = max(stat.stddev) if stat.stddev else 0.0
+    except Exception:
+        return False
+    if mean >= 252.0 and spread < 3.0:
+        return True
+    if mean <= 3.0 and spread < 3.0:
+        return True
+    return False
+
+
+def _finalize_figure_artifact(
+    figure: dict[str, object],
+    artifact_path: Path,
+    *,
+    doc_id: str,
+    source_name: str,
+    page_number: int,
+    blob_store: object,
+    describe_images: bool,
+) -> None:
+    if blob_store is not None:
+        blob_name = f"documents/{doc_id}/figures/{artifact_path.name}"
+        try:
+            upload_result = blob_store.upload_file(
+                artifact_path,
+                blob_name=blob_name,
+                metadata={
+                    "docid": doc_id,
+                    "source": source_name[:120],
+                    "page": str(page_number),
+                },
+            )
+            figure.update(upload_result)
+        except Exception as exc:
+            logger.warning(
+                "blob upload failed for figure artifact",
+                extra={"context": {"artifact_path": str(artifact_path), "error": str(exc)}},
+            )
+            figure["blob_upload_error"] = str(exc)
+    if describe_images:
+        try:
+            description, model_endpoint = describe_image_with_foundry(
+                artifact_path,
+                source_name=source_name,
+                page_number=page_number,
+            )
+            figure["description"] = description
+            figure["description_model_endpoint"] = model_endpoint
+        except Exception as exc:
+            error_text = str(exc)
+            if "content_filter" in error_text:
+                reason = "content_filter_jailbreak" if "jailbreak" in error_text else "content_filter"
+            else:
+                reason = "error"
+            logger.warning(
+                "image description failed",
+                extra={
+                    "context": {
+                        "artifact_path": str(artifact_path),
+                        "page_number": page_number,
+                        "reason": reason,
+                        "error": error_text[:600],
+                    }
+                },
+            )
+            figure["description_error"] = error_text
+
+
+def _extract_pdf_figures_rendered(
+    path: Path,
+    doc_id: str,
+    source_name: str,
+    *,
+    figure_dir: Path,
+    blob_store: object,
+    describe_images: bool,
+    max_artifacts: int,
+) -> list[dict[str, object]]:
+    """Render each PDF page and crop figure regions from the composited bitmap.
+
+    Unlike raw XObject extraction, this faithfully reproduces image masks,
+    soft-masked (SMask) transparency, CMYK/indexed colour spaces, and vector
+    overlays, so engineering figures no longer come out solid black."""
+    figures: list[dict[str, object]] = []
+    document = pdfium.PdfDocument(str(path))
+    scale = _FIGURE_RENDER_DPI / 72.0
+    try:
+        for page_index in range(len(document)):
+            page = document[page_index]
+            page_number = page_index + 1
+            try:
+                page_width, page_height = page.get_size()
+            except Exception:
+                continue
+            try:
+                page_objects = list(page.get_objects(max_depth=4))
+            except Exception as exc:
+                logger.warning(
+                    "pdfium page object enumeration failed",
+                    extra={"context": {"source": source_name, "page_number": page_number, "error": str(exc)}},
+                )
+                continue
+            image_boxes: list[tuple[float, float, float, float]] = []
+            vector_boxes: list[tuple[float, float, float, float]] = []
+            for obj in page_objects:
+                try:
+                    object_type = obj.type
+                except Exception:
+                    continue
+                if object_type == pdfium.raw.FPDF_PAGEOBJ_IMAGE:
+                    bucket = image_boxes
+                elif object_type in _FIGURE_VECTOR_OBJECT_TYPES:
+                    bucket = vector_boxes
+                else:
+                    continue
+                try:
+                    left, bottom, right, top = obj.get_bounds()
+                except Exception:
+                    continue
+                if right - left <= 0 or top - bottom <= 0:
+                    continue
+                bucket.append((left, bottom, right, top))
+
+            # Primary path: regions anchored on embedded raster images (the common
+            # case for engineering and scanned documents).
+            regions: list[tuple[tuple[float, float, float, float], str]] = []
+            if image_boxes:
+                for box in _cluster_boxes(image_boxes, _FIGURE_CLUSTER_GAP_PTS):
+                    box_left, box_bottom, box_right, box_top = box
+                    if (box_right - box_left) >= _FIGURE_MIN_DIMENSION_PTS and (
+                        box_top - box_bottom
+                    ) >= _FIGURE_MIN_DIMENSION_PTS:
+                        regions.append((box, "page_render"))
+
+            # Fallback path: vector-drawn charts (analyst/slide decks) carry no raster
+            # image to anchor on, so cluster the vector primitives into chart regions.
+            if not regions and len(vector_boxes) >= _FIGURE_VECTOR_OBJECT_THRESHOLD:
+                page_area = max(1.0, page_width * page_height)
+                sized_regions: list[tuple[float, tuple[float, float, float, float]]] = []
+                for box in _cluster_boxes(vector_boxes, _FIGURE_CLUSTER_GAP_PTS):
+                    box_left, box_bottom, box_right, box_top = box
+                    region_width = box_right - box_left
+                    region_height = box_top - box_bottom
+                    if (
+                        region_width < _FIGURE_VECTOR_MIN_DIMENSION_PTS
+                        or region_height < _FIGURE_VECTOR_MIN_DIMENSION_PTS
+                    ):
+                        continue
+                    if (
+                        region_height >= page_height * _FIGURE_VECTOR_MAX_EXTENT_RATIO
+                        or region_width >= page_width * _FIGURE_VECTOR_MAX_EXTENT_RATIO
+                    ):
+                        continue
+                    region_area = region_width * region_height
+                    if region_area / page_area < _FIGURE_VECTOR_MIN_AREA_RATIO:
+                        continue
+                    sized_regions.append((region_area, box))
+                sized_regions.sort(key=lambda item: item[0], reverse=True)
+                for _, box in sized_regions[:_FIGURE_VECTOR_MAX_REGIONS_PER_PAGE]:
+                    regions.append((box, "page_render_vector"))
+
+            if not regions:
+                continue
+            try:
+                bitmap = page.render(scale=scale)
+                page_image = bitmap.to_pil().convert("RGB")
+            except Exception as exc:
+                logger.warning(
+                    "pdfium page render failed",
+                    extra={"context": {"source": source_name, "page_number": page_number, "error": str(exc)}},
+                )
+                continue
+            page_px_width, page_px_height = page_image.size
+            group_index = 0
+            for (left, bottom, right, top), extraction_method in regions:
+                pad = _FIGURE_REGION_PADDING_PTS
+                x0 = int(round((left - pad) * scale))
+                x1 = int(round((right + pad) * scale))
+                y0 = int(round((page_height - (top + pad)) * scale))
+                y1 = int(round((page_height - (bottom - pad)) * scale))
+                x0, x1 = sorted((max(0, min(page_px_width, x0)), max(0, min(page_px_width, x1))))
+                y0, y1 = sorted((max(0, min(page_px_height, y0)), max(0, min(page_px_height, y1))))
+                if x1 - x0 < 8 or y1 - y0 < 8:
+                    continue
+                crop = page_image.crop((x0, y0, x1, y1))
+                if _is_blank_image(crop):
+                    continue
+                group_index += 1
+                artifact_base = figure_dir / f"page_{page_number:04d}_figure_{group_index}"
+                try:
+                    artifact_path, image_metadata = _save_normalized_pil(crop, artifact_base)
+                except Exception:
+                    continue
+                figure: dict[str, object] = {
+                    "artifact_id": uuid.uuid4().hex[:12],
+                    "page_number": page_number,
+                    "image_name": f"page_{page_number:04d}_figure_{group_index}.png",
+                    "artifact_path": str(artifact_path),
+                    "extraction_method": extraction_method,
+                    "region_left": round(left, 2),
+                    "region_bottom": round(bottom, 2),
+                    "region_right": round(right, 2),
+                    "region_top": round(top, 2),
+                }
+                figure.update(image_metadata)
+                _finalize_figure_artifact(
+                    figure,
+                    artifact_path,
+                    doc_id=doc_id,
+                    source_name=source_name,
+                    page_number=page_number,
+                    blob_store=blob_store,
+                    describe_images=describe_images,
+                )
+                figures.append(figure)
+                if max_artifacts > 0 and len(figures) >= max_artifacts:
+                    logger.info(
+                        "parser figure extraction reached document limit",
+                        extra={
+                            "context": {
+                                "doc_id": doc_id,
+                                "source_name": source_name,
+                                "artifact_limit": max_artifacts,
+                            }
+                        },
+                    )
+                    return figures
+    finally:
+        try:
+            document.close()
+        except Exception:
+            pass
+    return figures
+
+
 def _extract_pdf_figure_artifacts(
     path: Path,
     doc_id: str,
@@ -136,13 +463,6 @@ def _extract_pdf_figure_artifacts(
     describe_images: bool | None = None,
     max_artifacts: int | None = None,
 ) -> list[dict[str, object]]:
-    if PdfReader is None:
-        return []
-    try:
-        reader = PdfReader(str(path))
-    except Exception:
-        return []
-
     if describe_images is None:
         describe_images = settings.parser_image_understanding_enabled
     if max_artifacts is None:
@@ -151,6 +471,52 @@ def _extract_pdf_figure_artifacts(
     figure_dir = settings.artifacts_dir / f"{doc_id}_figures"
     figure_dir.mkdir(parents=True, exist_ok=True)
     blob_store = build_blob_artifact_store()
+
+    if pdfium is not None and PILImage is not None:
+        try:
+            return _extract_pdf_figures_rendered(
+                path,
+                doc_id,
+                source_name,
+                figure_dir=figure_dir,
+                blob_store=blob_store,
+                describe_images=describe_images,
+                max_artifacts=max_artifacts,
+            )
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            logger.warning(
+                "pdfium figure rendering failed; using embedded image fallback",
+                extra={"context": {"source": source_name, "error": str(exc)}},
+            )
+
+    return _extract_pdf_figures_embedded(
+        path,
+        doc_id,
+        source_name,
+        figure_dir=figure_dir,
+        blob_store=blob_store,
+        describe_images=describe_images,
+        max_artifacts=max_artifacts,
+    )
+
+
+def _extract_pdf_figures_embedded(
+    path: Path,
+    doc_id: str,
+    source_name: str,
+    *,
+    figure_dir: Path,
+    blob_store: object,
+    describe_images: bool,
+    max_artifacts: int,
+) -> list[dict[str, object]]:
+    if PdfReader is None:
+        return []
+    try:
+        reader = PdfReader(str(path))
+    except Exception:
+        return []
+
     figures: list[dict[str, object]] = []
     artifact_limit_reached = False
     for page_number, page in enumerate(reader.pages, start=1):
@@ -224,8 +590,23 @@ def _extract_pdf_figure_artifacts(
                     figure["description"] = description
                     figure["description_model_endpoint"] = model_endpoint
                 except Exception as exc:
-                    logger.warning("image description failed", extra={"context": {"artifact_path": str(artifact_path), "error": str(exc)}})
-                    figure["description_error"] = str(exc)
+                    error_text = str(exc)
+                    if "content_filter" in error_text:
+                        reason = "content_filter_jailbreak" if "jailbreak" in error_text else "content_filter"
+                    else:
+                        reason = "error"
+                    logger.warning(
+                        "image description failed",
+                        extra={
+                            "context": {
+                                "artifact_path": str(artifact_path),
+                                "page_number": page_number,
+                                "reason": reason,
+                                "error": error_text[:600],
+                            }
+                        },
+                    )
+                    figure["description_error"] = error_text
             figures.append(figure)
             if max_artifacts > 0 and len(figures) >= max_artifacts:
                 artifact_limit_reached = True
