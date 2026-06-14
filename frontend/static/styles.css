@@ -248,6 +248,10 @@ textarea {
   margin-bottom: 0;
 }
 
+.mode-picker-row.disabled {
+  opacity: 0.55;
+}
+
 .mode-select {
   display: grid;
   gap: 0.45rem;

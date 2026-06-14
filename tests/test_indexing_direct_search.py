@@ -58,6 +58,61 @@ class DirectSearchBodyTests(unittest.TestCase):
         self.assertEqual(body["captions"], "extractive|highlight-false")
         self.assertEqual(body["queryType"], "semantic")
 
+    def test_full_text_body_attaches_named_scoring_profile(self) -> None:
+        body = self.adapter._build_direct_search_body(
+            question="find the workflow",
+            retrieval_mode="full_text",
+            filter_expression="",
+            query_vector=None,
+            scoring_profile="enrichment-weighted",
+        )
+
+        self.assertEqual(body["scoringProfile"], "enrichment-weighted")
+
+    def test_hybrid_body_attaches_named_scoring_profile(self) -> None:
+        body = self.adapter._build_direct_search_body(
+            question="find the workflow",
+            retrieval_mode="hybrid",
+            filter_expression="",
+            query_vector=[0.1, 0.2, 0.3],
+            scoring_profile="freshness-boosted",
+        )
+
+        self.assertEqual(body["scoringProfile"], "freshness-boosted")
+
+    def test_default_scoring_profile_is_omitted(self) -> None:
+        body = self.adapter._build_direct_search_body(
+            question="find the workflow",
+            retrieval_mode="hybrid",
+            filter_expression="",
+            query_vector=[0.1, 0.2, 0.3],
+            scoring_profile="default",
+        )
+
+        self.assertNotIn("scoringProfile", body)
+
+    def test_vector_mode_ignores_scoring_profile(self) -> None:
+        body = self.adapter._build_direct_search_body(
+            question="find the workflow",
+            retrieval_mode="vector",
+            filter_expression="",
+            query_vector=[0.1, 0.2, 0.3],
+            scoring_profile="enrichment-weighted",
+        )
+
+        self.assertNotIn("scoringProfile", body)
+
+    def test_unknown_scoring_profile_is_omitted(self) -> None:
+        body = self.adapter._build_direct_search_body(
+            question="find the workflow",
+            retrieval_mode="full_text",
+            filter_expression="",
+            query_vector=None,
+            scoring_profile="not-a-real-profile",
+        )
+
+        self.assertNotIn("scoringProfile", body)
+
     def test_default_content_filter_excludes_navigation_for_normal_questions(self) -> None:
         filter_expression = self.adapter._default_content_filter("What three groups can suspended ceilings be placed in?")
 

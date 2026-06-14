@@ -177,6 +177,19 @@
                     Agentic retrieval uses the official Azure AI Search knowledge-base path with query planning, subqueries, and grounded synthesis.
                   </div>
                 </div>
+                <div class="mode-picker-row compact" id="scoring-profile-row">
+                  <label class="mode-select">
+                    <span>Scoring Profile</span>
+                    <select id="scoring-profile-select">
+                      <option value="default" selected>Default (RRF + semantic ranker)</option>
+                      <option value="enrichment-weighted">Enrichment-weighted (field boost)</option>
+                      <option value="freshness-boosted">Freshness-boosted (recency)</option>
+                    </select>
+                  </label>
+                  <div id="scoring-profile-caption" class="muted small">
+                    Scoring profiles tune the BM25 layer, so they only change Full text and Hybrid ranking. Switch profiles on the same question to see results reorder.
+                  </div>
+                </div>
               </div>
               <div id="chat-thread" class="chat-thread">
                 <div class="chat-empty">The corpus must be ready before chat returns grounded results.</div>
@@ -203,6 +216,6 @@
       </main>
     </div>
 
-    <script src="/static/app.js?v=20260611e" defer></script>
+    <script src="/static/app.js?v=20260614a" defer></script>
   </body>
 </html>

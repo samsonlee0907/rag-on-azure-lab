@@ -151,6 +151,7 @@ class ChatTurnRequest(BaseModel):
     corpus_mode: str = "auto"
     corpus_doc_ids: list[str] = Field(default_factory=list)
     retrieval_mode: str = "agentic"
+    scoring_profile: str = "default"
     include_debug: bool = False
 
 

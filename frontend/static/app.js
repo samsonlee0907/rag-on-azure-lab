@@ -5,6 +5,7 @@ const state = {
   chatMessages: [],
   chatCorpusMode: "auto",
   chatRetrievalMode: "agentic",
+  chatScoringProfile: "default",
   selectedCorpusDocIds: [],
   config: {},
   ingestionMode: "hybrid_blob_skillset",
@@ -383,6 +384,39 @@ function syncRetrievalModeControl() {
     "Agentic retrieval uses the official Azure AI Search knowledge-base path with query planning, subqueries, and grounded synthesis.";
 }
 
+function syncScoringProfileControl() {
+  const row = $("#scoring-profile-row");
+  const select = $("#scoring-profile-select");
+  const caption = $("#scoring-profile-caption");
+  if (!select) return;
+  select.value = state.chatScoringProfile || "default";
+  // Scoring profiles only affect the BM25 (text) score, so they are relevant to
+  // full text and hybrid. Pure vector and agentic retrieval ignore them.
+  const applies = state.chatRetrievalMode === "full_text" || state.chatRetrievalMode === "hybrid";
+  if (row) {
+    row.classList.toggle("disabled", !applies);
+  }
+  select.disabled = !applies;
+  if (!caption) return;
+  if (!applies) {
+    caption.textContent =
+      "Scoring profiles only tune the BM25 layer, so they have no effect on Vector or Agentic retrieval. Switch to Full text or Hybrid to compare them.";
+    return;
+  }
+  if (state.chatScoringProfile === "enrichment-weighted") {
+    caption.textContent =
+      "Enrichment-weighted boosts hits in summary_text and keyword_hints above raw body text, so curated enrichment fields outrank the same term in clean_text.";
+    return;
+  }
+  if (state.chatScoringProfile === "freshness-boosted") {
+    caption.textContent =
+      "Freshness-boosted applies a recency scoring function over last_updated, so more recently indexed documents rise in the ranking.";
+    return;
+  }
+  caption.textContent =
+    "Default applies no scoring profile: relevance relies on RRF and the semantic ranker exactly as the earlier labs do. Switch profiles to see results reorder.";
+}
+
 function getReadyDocuments() {
   return state.documents.filter((doc) => doc.status === "ready");
 }
@@ -630,6 +664,7 @@ async function refreshConfig() {
   state.ingestionMode = payload.default_ingestion_mode || state.ingestionMode;
   syncIngestionModeControl();
   syncRetrievalModeControl();
+  syncScoringProfileControl();
   $("#config-summary").innerHTML = `
     <div>Default ingestion: ${escapeHtml(payload.default_ingestion_mode || "app_managed")}</div>
     <div>Pipeline lane: ${escapeHtml(payload.search_pipeline_mode || "app_managed")}</div>
@@ -1179,6 +1214,7 @@ async function handleChat(event) {
         corpus_mode: state.chatCorpusMode,
         corpus_doc_ids: selectedDocIds,
         retrieval_mode: state.chatRetrievalMode,
+        scoring_profile: state.chatScoringProfile,
       }),
       timeoutMs,
     });
@@ -1244,6 +1280,11 @@ async function bootstrap() {
   $("#retrieval-mode-select").addEventListener("change", (event) => {
     state.chatRetrievalMode = event.target.value;
     syncRetrievalModeControl();
+    syncScoringProfileControl();
+  });
+  $("#scoring-profile-select").addEventListener("change", (event) => {
+    state.chatScoringProfile = event.target.value;
+    syncScoringProfileControl();
   });
   $("#generate-random-research").addEventListener("click", handleGenerateRandomResearch);
   $("#generate-futures-report").addEventListener("click", handleGenerateFuturesReport);
@@ -1262,6 +1303,7 @@ async function bootstrap() {
   await Promise.all([refreshConfig(), refreshWorkshopProfiles(), refreshDashboard(), refreshDocuments(), refreshKnowledge()]);
   renderChatScopeControls();
   syncRetrievalModeControl();
+  syncScoringProfileControl();
 }
 
 bootstrap().catch((error) => {

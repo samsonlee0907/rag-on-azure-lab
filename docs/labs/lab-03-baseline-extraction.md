@@ -153,7 +153,7 @@ This workshop relies on the indexer's **built-in change detection**. The blob in
 ```
 
 - Re-uploading a changed document re-indexes only that blob, not the whole container.
-- `last_updated` is `filterable` and `sortable` in the index schema, so it powers freshness filters today and a `freshness` scoring-function boost once you add a scoring profile (see Lab 04).
+- `last_updated` is `filterable` and `sortable` in the index schema, so it powers freshness filters today and the `freshness-boosted` scoring-function profile you switch on in Lab 04.
 
 The indexer can also **skip unchanged skill work** when the enrichment cache is enabled:
 

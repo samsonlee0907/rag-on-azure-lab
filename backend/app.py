@@ -199,6 +199,8 @@ def config_summary() -> dict[str, object]:
         "azure_search_enable_image_serving": settings.azure_search_enable_image_serving,
         "available_retrieval_modes": available_retrieval_modes,
         "default_retrieval_mode": available_retrieval_modes[0],
+        "available_scoring_profiles": ["default", "enrichment-weighted", "freshness-boosted"],
+        "default_scoring_profile": "default",
         "azure_search_native_content_extraction_mode": settings.azure_search_native_content_extraction_mode,
         "azure_search_native_chat_completion_deployment": settings.azure_search_native_chat_completion_deployment,
         "azure_search_skillset_preferred_extractor": settings.azure_search_skillset_preferred_extractor,
@@ -586,6 +588,7 @@ def chat(request: ChatTurnRequest) -> ChatTurnResponse:
                 retrieval_mode=requested_retrieval_mode,
                 doc_ids=selected_doc_ids or None,
                 doc_source_assignments=doc_source_assignments,
+                scoring_profile=(request.scoring_profile or "default"),
             )
         else:
             if requested_retrieval_mode == "native_multimodal" and not selected_native_sources:

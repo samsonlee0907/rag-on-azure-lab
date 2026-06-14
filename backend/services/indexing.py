@@ -17,6 +17,21 @@ from backend.services.workshop_profiles import get_workshop_skill_profile
 logger = logging.getLogger(__name__)
 DIRECT_SEARCH_TOP = 8
 DIRECT_VECTOR_K = 8
+
+# Lab 04 scoring-profile demonstration. These named profiles are attached to the
+# canonical index so the chat UI can switch the BM25-layer relevance behavior at
+# query time and show how scoring profiles reorder full-text and hybrid results.
+# "default" means "send no scoringProfile", i.e. rely on RRF + the semantic
+# ranker exactly as the earlier labs do.
+DIRECT_SEARCH_DEFAULT_SCORING_PROFILE = "default"
+SCORING_PROFILE_ENRICHMENT_WEIGHTED = "enrichment-weighted"
+SCORING_PROFILE_FRESHNESS_BOOSTED = "freshness-boosted"
+DIRECT_SEARCH_SCORING_PROFILES = {
+    DIRECT_SEARCH_DEFAULT_SCORING_PROFILE,
+    SCORING_PROFILE_ENRICHMENT_WEIGHTED,
+    SCORING_PROFILE_FRESHNESS_BOOSTED,
+}
+
 EMBEDDING_BATCH_SIZE = 12
 EMBEDDING_RETRY_ATTEMPTS = 4
 EMBEDDING_RETRY_BASE_DELAY_SECONDS = 20
@@ -368,6 +383,7 @@ class FoundryIQAdapter:
         retrieval_mode: str,
         doc_ids: list[str] | None = None,
         doc_source_assignments: dict[str, str] | None = None,
+        scoring_profile: str | None = None,
     ) -> dict[str, Any]:
         raise NotImplementedError
 
@@ -421,6 +437,7 @@ class LocalPreviewAdapter(FoundryIQAdapter):
         retrieval_mode: str,
         doc_ids: list[str] | None = None,
         doc_source_assignments: dict[str, str] | None = None,
+        scoring_profile: str | None = None,
     ) -> dict[str, Any]:
         return self.chat(question, doc_ids=doc_ids, doc_source_assignments=doc_source_assignments)
 
@@ -556,6 +573,7 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
         retrieval_mode: str,
         doc_ids: list[str] | None = None,
         doc_source_assignments: dict[str, str] | None = None,
+        scoring_profile: str | None = None,
     ) -> dict[str, Any]:
         normalized_mode = retrieval_mode.strip().lower()
         if normalized_mode not in {"full_text", "vector", "hybrid"}:
@@ -564,6 +582,7 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
             raise RuntimeError(
                 "Vector and hybrid retrieval require AZURE_OPENAI_EMBEDDING_DEPLOYMENT and a configured Foundry OpenAI endpoint."
             )
+        applied_scoring_profile = self._resolve_scoring_profile(scoring_profile, normalized_mode)
 
         selected_sources, routing_diagnostics = self._route_knowledge_sources(
             question,
@@ -587,6 +606,7 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
                 retrieval_mode=normalized_mode,
                 doc_ids=scoped_doc_ids,
                 query_vector=query_vector,
+                scoring_profile=applied_scoring_profile,
             )
             values = payload.get("value") or []
             activity.append(
@@ -600,6 +620,7 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
                         "search": question,
                     },
                     "searchMode": normalized_mode,
+                    "scoringProfile": applied_scoring_profile or DIRECT_SEARCH_DEFAULT_SCORING_PROFILE,
                 }
             )
             for item in values:
@@ -636,6 +657,7 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
             "agentic_retrieval": False,
             "corpus_mode": "custom" if doc_ids else "auto",
             "selected_doc_ids": doc_ids or [],
+            "scoring_profile": applied_scoring_profile or DIRECT_SEARCH_DEFAULT_SCORING_PROFILE,
             "activity": activity,
         }
         return {
@@ -655,6 +677,47 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
     def _ensure_indexes(self) -> None:
         for source in self._publishable_knowledge_sources():
             self._ensure_index(source.index_name)
+
+    def _build_scoring_profiles(self) -> list[dict[str, Any]]:
+        """Lab 04 scoring profiles attached to the canonical index.
+
+        Scoring profiles influence the BM25 (text) score that feeds full-text
+        search directly and forms half of the fused hybrid result, so switching
+        them at query time is a clean way to show how relevance tuning reorders
+        results before RRF and the semantic ranker ever run.
+        """
+        return [
+            {
+                # Field weighting: a term that lands in the curated enrichment
+                # fields outranks the same term buried in raw body text.
+                "name": SCORING_PROFILE_ENRICHMENT_WEIGHTED,
+                "text": {
+                    "weights": {
+                        "summary_text": 5,
+                        "keyword_hints": 4,
+                        "source_name": 3,
+                        "section_path": 2,
+                        "clean_text": 1,
+                        "image_description_text": 1,
+                    }
+                },
+            },
+            {
+                # Scoring function: boost more recently updated documents using
+                # the indexer-maintained last_updated high-water mark.
+                "name": SCORING_PROFILE_FRESHNESS_BOOSTED,
+                "functionAggregation": "sum",
+                "functions": [
+                    {
+                        "type": "freshness",
+                        "fieldName": "last_updated",
+                        "boost": 4,
+                        "interpolation": "linear",
+                        "freshness": {"boostingDuration": "P365D"},
+                    }
+                ],
+            },
+        ]
 
     def _ensure_index(self, index_name: str) -> None:
         url = f"{self.endpoint}/indexes/{index_name}?api-version=2025-09-01"
@@ -708,6 +771,7 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
                     }
                 ],
             },
+            "scoringProfiles": self._build_scoring_profiles(),
         }
         if self._vector_search_available():
             body["vectorSearch"] = {
@@ -979,6 +1043,7 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
         retrieval_mode: str,
         filter_expression: str,
         query_vector: list[float] | None,
+        scoring_profile: str | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "top": DIRECT_SEARCH_TOP,
@@ -988,12 +1053,19 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
         if filter_expression:
             body["filter"] = filter_expression
 
+        # Scoring profiles act on the BM25 (text) score, so they only change
+        # full-text and hybrid ranking. Pure vector search is scored by HNSW
+        # similarity and is unaffected, so we never attach one there.
+        applied_scoring_profile = self._resolve_scoring_profile(scoring_profile, retrieval_mode)
+
         if retrieval_mode == "full_text":
             # Keep the baseline genuinely lexical: BM25 ranking only, with no
             # semantic L2 reranking. This preserves the workshop's lexical
             # control group so later labs can attribute gains to vectors,
             # RRF fusion, and the semantic ranker introduced in hybrid mode.
             body["search"] = question
+            if applied_scoring_profile:
+                body["scoringProfile"] = applied_scoring_profile
             return body
 
         if retrieval_mode == "vector":
@@ -1012,6 +1084,8 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
         body["queryType"] = "semantic"
         body["semanticConfiguration"] = "default-semantic-config"
         body["captions"] = "extractive|highlight-false"
+        if applied_scoring_profile:
+            body["scoringProfile"] = applied_scoring_profile
         body["vectorQueries"] = [
             {
                 "kind": "vector",
@@ -1021,6 +1095,18 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
             }
         ]
         return body
+
+    @staticmethod
+    def _resolve_scoring_profile(scoring_profile: str | None, retrieval_mode: str) -> str | None:
+        """Return a scoring-profile name to attach, or None to omit it."""
+        if retrieval_mode not in {"full_text", "hybrid"}:
+            return None
+        normalized = (scoring_profile or "").strip()
+        if not normalized or normalized == DIRECT_SEARCH_DEFAULT_SCORING_PROFILE:
+            return None
+        if normalized not in DIRECT_SEARCH_SCORING_PROFILES:
+            return None
+        return normalized
 
     def _default_content_filter(self, question: str) -> str:
         clauses: list[str] = []
@@ -1039,6 +1125,7 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
         retrieval_mode: str,
         doc_ids: list[str] | None,
         query_vector: list[float] | None,
+        scoring_profile: str | None = None,
     ) -> tuple[dict[str, Any], int]:
         filter_expression = _combine_filters(
             self._build_doc_filter(doc_ids or []),
@@ -1049,6 +1136,7 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
             retrieval_mode=retrieval_mode,
             filter_expression=filter_expression,
             query_vector=query_vector,
+            scoring_profile=scoring_profile,
         )
         url = f"{self.endpoint}/indexes/{source.index_name}/docs/search?api-version=2025-09-01"
         response = requests.post(url, headers=self.headers, data=json.dumps(body), timeout=60)
