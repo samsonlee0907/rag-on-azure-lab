@@ -134,6 +134,18 @@ citations = _hydrate_citations(citations)   # joins native figure crops onto cit
   under the citations, that join is doing its work. (If figures appear in `Hybrid` but not `Agentic`,
   it is almost always a stale browser cache - hard-refresh with Ctrl+F5.)
 
+### Figure *text* now reaches the direct lanes too
+
+Agentic retrieval has always had an edge on chart-heavy questions because its in-Search enrichment
+index already carries the figure OCR (`ocr_text_chunks`) and captions, so the in-Search synthesizer
+can reason over chart numbers directly. The direct lanes (`Full text`, `Vector`, `Hybrid`) historically
+could not - they only saw the chunk's prose snippet and the crop *image*, which the answer model can't
+read. Lab 06's per-figure text projection (`search-image-assets-text`) plus the snippet injection in
+`_hydrate_citations` closes that gap: the figure's OCR/caption text is spliced onto the citation
+snippet by page, so the direct lanes now reflect chart content too. Net effect after the next
+ingestion: every retrieval mode - agentic and direct - can answer "what does the chart on page 4 show"
+with the figure's actual numbers.
+
 ## Configuration Knobs
 
 | Variable | What it controls | Good workshop variation |

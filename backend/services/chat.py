@@ -752,6 +752,13 @@ _NATIVE_FIGURE_CACHE: dict[str, Any] = {"expires": 0.0, "map": {}}
 _NATIVE_FIGURE_CACHE_TTL_SECONDS = 120
 _NATIVE_FIGURE_CACHE_LOCK = threading.Lock()
 
+_NATIVE_FIGURE_TEXT_CACHE: dict[str, Any] = {"expires": 0.0, "map": {}}
+_NATIVE_FIGURE_TEXT_CACHE_TTL_SECONDS = 120
+_NATIVE_FIGURE_TEXT_CACHE_LOCK = threading.Lock()
+# Cap how much figure text we splice onto a single citation snippet so chart OCR /
+# captions enrich the answer without drowning the surrounding passage.
+MAX_FIGURE_TEXT_PER_CITATION_CHARS = 320
+
 
 def _decode_doc_id_from_asset_name(name: str) -> str:
     """Decode a knowledge-store projection blob name back to its source doc id.
@@ -853,10 +860,110 @@ def _native_figure_page_map() -> dict[str, dict[int, list[str]]]:
     return figure_map
 
 
+def _coerce_figure_text_values(value: Any) -> list[str]:
+    """Flatten an OCR/caption projection value (string, list, or nested list) into a
+    list of clean text fragments."""
+    fragments: list[str] = []
+    if value is None:
+        return fragments
+    if isinstance(value, str):
+        text = value.strip()
+        if text:
+            fragments.append(text)
+        return fragments
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            fragments.extend(_coerce_figure_text_values(item))
+    return fragments
+
+
+def _build_native_figure_text_map() -> dict[str, dict[int, list[str]]]:
+    """Map ``{doc_id: {page_number: [figure_text, ...]}}`` from the knowledge-store
+    text projection (per-figure OCR + caption).
+
+    When the visual-NLP skills run, the skillset projects each figure's extracted text
+    (chart numbers, axis labels, callouts) and caption to a dedicated container as an
+    inline-shaped object blob carrying its ``pageNumber``. Joining that text onto
+    citations by page lets every retrieval mode reflect what a figure shows - especially
+    numeric chart content - even though the figure itself is a cropped image. Best-effort:
+    returns ``{}`` on any failure (e.g. before the next indexer run populates the
+    container) so chat retrieval never breaks.
+    """
+    if not settings.azure_search_enable_image_serving:
+        return {}
+    container = settings.azure_search_asset_store_text_container
+    if not container:
+        return {}
+    connection_string = (
+        settings.azure_search_asset_store_connection_string
+        or settings.azure_search_blob_connection_string_resolved
+    )
+    try:
+        text_store = BaseBlobStore(
+            container_name=container,
+            connection_string=connection_string,
+            account_url=settings.azure_blob_account_url,
+            account_key=settings.azure_storage_account_key,
+        )
+        names = text_store.list_blobs()
+    except Exception:
+        return {}
+
+    text_map: dict[str, dict[int, list[str]]] = {}
+    for name in names:
+        doc_id = _decode_doc_id_from_asset_name(name)
+        if not doc_id:
+            continue
+        try:
+            payload, _ = text_store.download_bytes(name)
+            doc = json.loads(payload)
+        except Exception:
+            continue
+        if not isinstance(doc, dict):
+            continue
+        page_value = doc.get("pageNumber")
+        if page_value is None:
+            page_value = (doc.get("locationMetadata") or {}).get("pageNumber")
+        try:
+            page = int(page_value)
+        except (TypeError, ValueError):
+            continue
+        fragments: list[str] = []
+        fragments.extend(_coerce_figure_text_values(doc.get("ocrText")))
+        fragments.extend(_coerce_figure_text_values(doc.get("caption")))
+        cleaned: list[str] = []
+        seen_fragments: set[str] = set()
+        for fragment in fragments:
+            normalized = re.sub(r"\s+", " ", fragment).strip()
+            key = normalized.lower()
+            if not normalized or key in seen_fragments:
+                continue
+            seen_fragments.add(key)
+            cleaned.append(normalized)
+        if cleaned:
+            text_map.setdefault(doc_id, {}).setdefault(page, []).extend(cleaned)
+    return text_map
+
+
+def _native_figure_text_map() -> dict[str, dict[int, list[str]]]:
+    """Return the native figure text map, cached for a short TTL to avoid listing /
+    downloading the text projections on every chat turn."""
+    now = time.monotonic()
+    with _NATIVE_FIGURE_TEXT_CACHE_LOCK:
+        if now < _NATIVE_FIGURE_TEXT_CACHE["expires"] and _NATIVE_FIGURE_TEXT_CACHE["map"]:
+            return _NATIVE_FIGURE_TEXT_CACHE["map"]
+    text_map = _build_native_figure_text_map()
+    with _NATIVE_FIGURE_TEXT_CACHE_LOCK:
+        _NATIVE_FIGURE_TEXT_CACHE["map"] = text_map
+        _NATIVE_FIGURE_TEXT_CACHE["expires"] = now + _NATIVE_FIGURE_TEXT_CACHE_TTL_SECONDS
+    return text_map
+
+
 def _hydrate_citations(citations: list[ChatCitation]) -> list[ChatCitation]:
     jobs, jobs_by_doc_id, jobs_by_title, jobs_by_uri = _job_lookup()
     figures_by_doc_id: dict[str, list[dict[str, Any]]] = {}
     native_figure_map = _native_figure_page_map()
+    native_figure_text_map = _native_figure_text_map()
     for citation in citations:
         matched_job = jobs_by_doc_id.get(citation.doc_id) if citation.doc_id else None
         if not matched_job:
@@ -893,6 +1000,34 @@ def _hydrate_citations(citations: list[ChatCitation]) -> list[ChatCitation]:
                     if len(native_paths) >= MAX_IMAGE_EVIDENCE_PER_CITATION:
                         break
                 citation.asset_image_paths = native_paths
+
+        # Splice the figure's own extracted text (OCR + caption) onto the citation
+        # snippet, matched by page. The snippet is the single source the deterministic
+        # direct-search answer and the app-side LLM prompt both read, so this is what
+        # makes answers reflect chart numbers / labels that live inside a cropped image.
+        # No-op until the next indexer run populates the text projection container.
+        if citation.doc_id and citation.page_numbers and native_figure_text_map:
+            doc_texts = native_figure_text_map.get(citation.doc_id)
+            if doc_texts:
+                snippet_fingerprint = _snippet_fingerprint(citation.snippet)
+                figure_fragments: list[str] = []
+                seen_fragments: set[str] = set()
+                for page in citation.page_numbers:
+                    for fragment in doc_texts.get(page, []):
+                        key = re.sub(r"\s+", " ", fragment).strip().lower()
+                        if not key or key in seen_fragments:
+                            continue
+                        # Skip text already present in the surrounding passage so we
+                        # don't echo prose the chunk already carries.
+                        if key in snippet_fingerprint:
+                            continue
+                        seen_fragments.add(key)
+                        figure_fragments.append(fragment)
+                if figure_fragments:
+                    addendum = " ".join(figure_fragments)
+                    if len(addendum) > MAX_FIGURE_TEXT_PER_CITATION_CHARS:
+                        addendum = addendum[:MAX_FIGURE_TEXT_PER_CITATION_CHARS].rstrip() + "..."
+                    citation.snippet = f"{citation.snippet.rstrip()}\n\n[Figure text] {addendum}"
 
         figures = figures_by_doc_id.get(citation.doc_id)
         if figures is None:

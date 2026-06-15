@@ -30,6 +30,9 @@ param(
     [string]$SearchAssetStoreContainerName = "search-image-assets",
 
     [Parameter(Mandatory = $false)]
+    [string]$SearchAssetStoreTextContainerName = "search-image-assets-text",
+
+    [Parameter(Mandatory = $false)]
     [string]$SearchSku = "standard",
 
     [Parameter(Mandatory = $false)]
@@ -408,6 +411,7 @@ Ensure-StorageContainer -ContainerName $FigureArtifactContainerName -AccountName
 Ensure-StorageContainer -ContainerName $SearchSourceContainerName -AccountName $StorageAccountName
 Ensure-StorageContainer -ContainerName $SearchCacheContainerName -AccountName $StorageAccountName
 Ensure-StorageContainer -ContainerName $SearchAssetStoreContainerName -AccountName $StorageAccountName
+Ensure-StorageContainer -ContainerName $SearchAssetStoreTextContainerName -AccountName $StorageAccountName
 
 Write-Host "Creating Azure AI Search service..." -ForegroundColor Yellow
 Invoke-Az -Arguments @(
@@ -701,6 +705,7 @@ $output = [ordered]@{
         AZURE_SEARCH_ENABLE_IMAGE_SERVING = "false"
         AZURE_SEARCH_ASSET_STORE_CONNECTION_STRING = $managedIdentityStorageConnectionString
         AZURE_SEARCH_ASSET_STORE_CONTAINER = $SearchAssetStoreContainerName
+        AZURE_SEARCH_ASSET_STORE_TEXT_CONTAINER = $SearchAssetStoreTextContainerName
         AZURE_OPENAI_EMBEDDING_DEPLOYMENT = $EmbeddingDeploymentName
         AZURE_OPENAI_EMBEDDING_MODEL_NAME = $EmbeddingModelName
         AZURE_FOUNDRY_RESOURCE_ENDPOINT = $foundryShow.properties.endpoint

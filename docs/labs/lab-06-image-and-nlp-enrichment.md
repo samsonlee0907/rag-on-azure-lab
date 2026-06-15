@@ -240,16 +240,28 @@ indexer's built-in cracker is disabled so it does not produce duplicate whole-pa
 
 ```python
 # backend/services/search_skillset_enrichment.py
-def _build_figure_knowledge_store(self, *, extractor_kind):
+def _build_figure_knowledge_store(self, *, extractor_kind, include_visual_text=False):
     if extractor_kind != "document_layout" or not settings.azure_search_enable_image_serving:
         return None
-    return {
-        "storageConnectionString": self._figure_knowledge_store_connection_string(),
-        "projections": [
-            {"files":   [{"storageContainer": settings.azure_search_asset_store_container,          "source": "/document/normalized_images/*"}]},
-            {"objects": [{"storageContainer": settings.azure_search_asset_store_metadata_container, "source": "/document/normalized_images/*"}]},
-        ],
-    }
+    projections = [
+        {"files":   [{"storageContainer": settings.azure_search_asset_store_container,          "source": "/document/normalized_images/*"}]},
+        {"objects": [{"storageContainer": settings.azure_search_asset_store_metadata_container, "source": "/document/normalized_images/*"}]},
+    ]
+    if include_visual_text and settings.azure_search_asset_store_text_container:
+        # Inline-shaped object projection: capture each figure's OCR text + caption (chart
+        # numbers, axis labels) so it can travel with chunks. The base object projection
+        # above only serializes the image node, NOT the enriched OCR/caption siblings.
+        projections.append({"objects": [{
+            "storageContainer": settings.azure_search_asset_store_text_container,
+            "source": None,
+            "sourceContext": "/document/normalized_images/*",
+            "inputs": [
+                {"name": "pageNumber", "source": "/document/normalized_images/*/locationMetadata/pageNumber"},
+                {"name": "ocrText",    "source": "/document/normalized_images/*/ocr_text_chunks"},
+                {"name": "caption",    "source": "/document/normalized_images/*/image_analysis/captions/*/text"},
+            ],
+        }]})
+    return {"storageConnectionString": self._figure_knowledge_store_connection_string(), "projections": projections}
 
 # _build_indexer_body(...) parameters.configuration:
 #   "imageAction": "none" if extractor_kind == "document_layout" else "generateNormalizedImages"
@@ -258,6 +270,12 @@ def _build_figure_knowledge_store(self, *, extractor_kind):
 - The **file** projection writes each crop to `search-image-assets`.
 - The **object** projection writes each crop's metadata - including `pageNumber` and
   `boundingPolygons` - to `search-image-assets-meta`.
+- The **inline-shaped object** projection (visual-NLP profile only) writes each figure's OCR text +
+  caption to `search-image-assets-text`. This is the key to making **figure content travel with the
+  chunk**: the base object projection serializes only the image node (path + page), *not* the enriched
+  `ocr_text_chunks` / `image_analysis` siblings, so without this dedicated projection the chart text
+  never leaves the enrichment index. Object projections cannot share a container, hence the separate
+  text container.
 - `imageAction: none` keeps the indexer from emitting whole-page images that would duplicate the
   Document Layout crops.
 
@@ -341,6 +359,46 @@ if not citation.asset_image_paths and citation.doc_id and citation.page_numbers:
   `onerror` handler removes any image that still fails, so a stray miss degrades to "no card" rather
   than a broken icon.
 
+### How figure *text* travels with the chunk (chart-aware answers)
+
+Surfacing the crop image is useful for a human reader, but the **answer model** cannot read pixels in
+the direct-search lanes - it only sees the citation's text snippet. So a chart whose key numbers live
+inside the image ("Adoption rose to 65% in 2024") would not be reflected in the answer even though the
+figure is cited. The fix is to make the figure's **extracted text** ride along with the chunk.
+
+This has two halves:
+
+1. **Capture (ingestion side).** The inline-shaped object projection above persists each figure's
+   `ocrText` (chart numbers, axis labels, callouts) and `caption` to `search-image-assets-text`, keyed
+   by `pageNumber`. This only runs for the visual-NLP profile, because OCR + Image Analysis are what
+   produce that text in the first place.
+2. **Join (query side).** A second cached map - `{doc_id: {page_number: [figure_text, ...]}}` - is
+   built from that container, and `_hydrate_citations` splices the matching figure text onto the
+   citation's snippet by page:
+
+```python
+# backend/services/chat.py - _hydrate_citations (abridged)
+if citation.doc_id and citation.page_numbers and native_figure_text_map:
+    doc_texts = native_figure_text_map.get(citation.doc_id)
+    figure_fragments = [t for page in citation.page_numbers for t in doc_texts.get(page, [])
+                        if t.lower() not in _snippet_fingerprint(citation.snippet)]   # skip echoes
+    if figure_fragments:
+        addendum = " ".join(figure_fragments)[:MAX_FIGURE_TEXT_PER_CITATION_CHARS]
+        citation.snippet = f"{citation.snippet.rstrip()}\n\n[Figure text] {addendum}"
+```
+
+- Because the snippet is the single source both the deterministic direct-search answer
+  (`_build_direct_search_answer`) and the app-side LLM prompt (`_format_sources_for_prompt`) read,
+  this one injection makes **every** retrieval mode chart-aware - not just the agentic lane, which
+  already had figure OCR inside its in-Search enrichment index.
+- A bounded length (`MAX_FIGURE_TEXT_PER_CITATION_CHARS`) and an "already in the surrounding passage"
+  guard keep the addendum from drowning or echoing the prose the chunk already carries.
+
+> **This capture takes effect on the next ingestion.** The text projection only writes blobs when the
+> indexer next runs against the visual-NLP profile. Until then the query-side join is a safe no-op
+> (the container is empty), so nothing regresses on previously indexed corpora - the chart text simply
+> lights up automatically once documents are re-ingested.
+
 ## Configuration Knobs
 
 | Variable | What it controls | Good workshop variation |
@@ -349,6 +407,7 @@ if not citation.asset_image_paths and citation.doc_id and citation.page_numbers:
 | `AZURE_SEARCH_SKILLSET_PREFERRED_EXTRACTOR` | Chooses the Search-managed extractor: `document_extraction` (default, whole-page images), `document_layout` (figure-aware crops + location metadata), or `content_understanding`. | `document_layout` for this lab. |
 | `AZURE_SEARCH_ASSET_STORE_CONTAINER` | Blob container for the figure crops (file projection). | `search-image-assets` |
 | `AZURE_SEARCH_ASSET_STORE_METADATA_CONTAINER` | Blob container for the per-figure location metadata (object projection). | `search-image-assets-meta` |
+| `AZURE_SEARCH_ASSET_STORE_TEXT_CONTAINER` | Blob container for the per-figure OCR + caption text (inline-shaped object projection) that gets joined onto citations by page so answers reflect chart content. | `search-image-assets-text` |
 | `AZURE_SEARCH_ENABLE_IMAGE_SERVING` | Gates the knowledge-store projection + the `/api/native-images` serving endpoint. | Keep `true` to see crops in the UI. |
 | `ENABLE_PARSER_FIGURE_EXTRACTION` | Turns on the offline parser figure path for a side-by-side comparison with the server-side crops. | Set `true` if you want chunk-linked figure thumbnails in the portal. |
 | `ENABLE_IMAGE_UNDERSTANDING` | Optional per-figure Foundry vision captions for citation thumbnails. Image descriptions for retrieval already come from the Search `ImageAnalysisSkill`, so this is a separate, richer lane that is off by default to avoid Prompt-Shields throttling during burst ingestion. | Leave `false`; set `true` only if you want per-figure Foundry caption metadata on top of the built-in signal. |

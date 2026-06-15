@@ -221,6 +221,7 @@ class SearchSkillsetEnrichmentTests(unittest.TestCase):
             patch("backend.services.search_skillset_enrichment.settings.azure_search_asset_store_connection_string", "UseDevelopmentStorage=true"),
             patch("backend.services.search_skillset_enrichment.settings.azure_search_asset_store_container", "search-image-assets"),
             patch("backend.services.search_skillset_enrichment.settings.azure_search_asset_store_metadata_container", "search-image-assets-meta"),
+            patch("backend.services.search_skillset_enrichment.settings.azure_search_asset_store_text_container", "search-image-assets-text"),
         ):
             body = service._build_skillset_body()
 
@@ -247,6 +248,21 @@ class SearchSkillsetEnrichmentTests(unittest.TestCase):
         self.assertEqual(projections[0]["files"][0]["storageContainer"], "search-image-assets")
         self.assertEqual(projections[0]["files"][0]["source"], "/document/normalized_images/*")
         self.assertEqual(projections[1]["objects"][0]["storageContainer"], "search-image-assets-meta")
+
+        # The visual-NLP profile also projects each figure's OCR + caption text to a
+        # dedicated container (inline-shaped object projection) so chart text can be
+        # joined onto citations by page at query time.
+        text_projection = projections[2]["objects"][0]
+        self.assertEqual(text_projection["storageContainer"], "search-image-assets-text")
+        self.assertIsNone(text_projection["source"])
+        self.assertEqual(text_projection["sourceContext"], "/document/normalized_images/*")
+        text_inputs = {item["name"]: item["source"] for item in text_projection["inputs"]}
+        self.assertEqual(text_inputs["pageNumber"], "/document/normalized_images/*/locationMetadata/pageNumber")
+        self.assertEqual(text_inputs["ocrText"], "/document/normalized_images/*/ocr_text_chunks")
+        self.assertEqual(
+            text_inputs["caption"],
+            "/document/normalized_images/*/image_analysis/captions/*/text",
+        )
 
     def test_document_layout_indexer_disables_built_in_image_action(self) -> None:
         service = AzureSearchSkillsetEnrichmentService()

@@ -471,7 +471,10 @@ class AzureSearchSkillsetEnrichmentService:
             ),
             "skills": skills,
         }
-        knowledge_store = self._build_figure_knowledge_store(extractor_kind=extractor_kind)
+        knowledge_store = self._build_figure_knowledge_store(
+            extractor_kind=extractor_kind,
+            include_visual_text=self._profile_uses_visual_nlp(active_profile),
+        )
         if knowledge_store:
             skillset["knowledgeStore"] = knowledge_store
         if settings.azure_foundry_resource_endpoint:
@@ -634,7 +637,9 @@ class AzureSearchSkillsetEnrichmentService:
             or settings.azure_search_blob_connection_string_resolved
         )
 
-    def _build_figure_knowledge_store(self, *, extractor_kind: str) -> dict[str, Any] | None:
+    def _build_figure_knowledge_store(
+        self, *, extractor_kind: str, include_visual_text: bool = False
+    ) -> dict[str, Any] | None:
         # Persist the Document Layout skill's figure crops + per-figure location metadata to
         # blob so they can be served back as citation evidence (the Azure-native equivalent
         # of the offline parser's local `_figures/` PNGs). Only the Document Layout path emits
@@ -644,26 +649,66 @@ class AzureSearchSkillsetEnrichmentService:
         connection_string = self._figure_knowledge_store_connection_string()
         if not connection_string:
             return None
-        return {
-            "storageConnectionString": connection_string,
-            "projections": [
-                {
-                    "files": [
-                        {
-                            "storageContainer": settings.azure_search_asset_store_container,
-                            "source": "/document/normalized_images/*",
-                        }
-                    ]
-                },
+        projections: list[dict[str, Any]] = [
+            {
+                "files": [
+                    {
+                        "storageContainer": settings.azure_search_asset_store_container,
+                        "source": "/document/normalized_images/*",
+                    }
+                ]
+            },
+            {
+                "objects": [
+                    {
+                        "storageContainer": settings.azure_search_asset_store_metadata_container,
+                        "source": "/document/normalized_images/*",
+                    }
+                ]
+            },
+        ]
+        # When the visual-NLP skills run (OCR + Image Analysis), capture each figure's
+        # extracted text - chart numbers, axis labels, callouts - and its caption into a
+        # dedicated container as an inline-shaped object projection. The base object
+        # projection above only serializes the image node (path + page), NOT the enriched
+        # OCR/caption siblings, so without this the chart text never leaves the enrichment
+        # index. Keyed per figure with its pageNumber, this lets chat join the figure text
+        # onto canonical citations by page so answers reflect what the figure shows. Object
+        # projections cannot share a container, hence the separate text container. (Inline
+        # shape per the documented knowledge-store cross-projection pattern.)
+        if include_visual_text and settings.azure_search_asset_store_text_container:
+            projections.append(
                 {
                     "objects": [
                         {
-                            "storageContainer": settings.azure_search_asset_store_metadata_container,
-                            "source": "/document/normalized_images/*",
+                            "storageContainer": settings.azure_search_asset_store_text_container,
+                            "source": None,
+                            "sourceContext": "/document/normalized_images/*",
+                            "inputs": [
+                                {
+                                    "name": "pageNumber",
+                                    "source": "/document/normalized_images/*/locationMetadata/pageNumber",
+                                },
+                                {
+                                    "name": "ordinalPosition",
+                                    "source": "/document/normalized_images/*/locationMetadata/ordinalPosition",
+                                },
+                                {
+                                    "name": "ocrText",
+                                    "source": "/document/normalized_images/*/ocr_text_chunks",
+                                },
+                                {
+                                    "name": "caption",
+                                    "source": "/document/normalized_images/*/image_analysis/captions/*/text",
+                                },
+                            ],
                         }
                     ]
-                },
-            ],
+                }
+            )
+        return {
+            "storageConnectionString": connection_string,
+            "projections": projections,
         }
 
     def _build_prompt_seed_split_skill(self) -> dict[str, Any]:

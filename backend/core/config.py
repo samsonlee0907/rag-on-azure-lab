@@ -314,6 +314,14 @@ class Settings:
         "AZURE_SEARCH_ASSET_STORE_METADATA_CONTAINER",
         "search-image-assets-meta",
     )
+    # Per-figure OCR + caption text projected from the visual-NLP skills. Kept in its own
+    # container because object projections cannot share a container, and so the chart text
+    # can be joined onto citations by page at query time (so answers reflect what a figure
+    # shows, especially numbers in charts). Populated on the next indexer run.
+    azure_search_asset_store_text_container: str = os.getenv(
+        "AZURE_SEARCH_ASSET_STORE_TEXT_CONTAINER",
+        "search-image-assets-text",
+    )
     azure_openai_embedding_deployment: str = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "")
     azure_openai_embedding_model_name: str = os.getenv(
         "AZURE_OPENAI_EMBEDDING_MODEL_NAME",

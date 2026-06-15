@@ -131,7 +131,7 @@ The workshop flow uploads the original file to Blob, runs Azure AI Search pull-b
 
 - `document_extraction` (default) - Search-managed extraction; the indexer emits whole-page normalized images.
 - `content_understanding` - resource-attached Content Understanding skill with semantic chunking (lab 08 / full-managed lane).
-- `document_layout` - resource-attached `DocumentIntelligenceLayoutSkill`; it performs figure-aware image cropping server-side and emits each crop with its page number and bounding polygons. The crops are persisted to the asset store via knowledge-store projections (binary crop -> `AZURE_SEARCH_ASSET_STORE_CONTAINER`, per-figure location metadata -> `AZURE_SEARCH_ASSET_STORE_METADATA_CONTAINER`) and feed the same OCR / Image Analysis enrichment as the visual profile (labs 06/07/09 / Option 1). Requires a billable Foundry / AI Services resource (`AZURE_FOUNDRY_RESOURCE_ENDPOINT` or `AZURE_FOUNDRY_API_KEY`). When this extractor is active the indexer's built-in image cracking (`imageAction`) is disabled so the layout skill is the sole source of normalized images.
+- `document_layout` - resource-attached `DocumentIntelligenceLayoutSkill`; it performs figure-aware image cropping server-side and emits each crop with its page number and bounding polygons. The crops are persisted to the asset store via knowledge-store projections (binary crop -> `AZURE_SEARCH_ASSET_STORE_CONTAINER`, per-figure location metadata -> `AZURE_SEARCH_ASSET_STORE_METADATA_CONTAINER`, and - when the visual-NLP skills run - per-figure OCR + caption text -> `AZURE_SEARCH_ASSET_STORE_TEXT_CONTAINER`) and feed the same OCR / Image Analysis enrichment as the visual profile (labs 06/07/09 / Option 1). Requires a billable Foundry / AI Services resource (`AZURE_FOUNDRY_RESOURCE_ENDPOINT` or `AZURE_FOUNDRY_API_KEY`). When this extractor is active the indexer's built-in image cracking (`imageAction`) is disabled so the layout skill is the sole source of normalized images.
 
 Recommended core workshop defaults:
 
@@ -219,6 +219,7 @@ The app uses the Foundry chat deployment to synthesize grounded answers for the 
 - `AZURE_SEARCH_ASSET_STORE_CONNECTION_STRING`
 - `AZURE_SEARCH_ASSET_STORE_CONTAINER`
 - `AZURE_SEARCH_ASSET_STORE_METADATA_CONTAINER`
+- `AZURE_SEARCH_ASSET_STORE_TEXT_CONTAINER` - Blob container for the per-figure OCR + caption text projected by the visual-NLP skills (inline-shaped object projection, separate container because object projections cannot share one). At query time chat joins this text onto citations by page number, so answers reflect what a figure shows - especially numbers inside charts - even though the figure is a cropped image. Default `search-image-assets-text`. Populated on the next indexer run after enabling; the query-time join is a safe no-op until then.
 
 This is now the **default indexing and retrieval path**. The Blob upload is registered as an `azureBlob` Azure AI Search knowledge source whose managed `contentExtractionMode` runs the Document Layout pipeline server-side: it crops figures, persists them to the asset store, verbalizes/embeds them, and serves them through image-serving URLs. This replaces the offline render-then-crop figure parser for the default run; that parser remains available as an explicit opt-in (see Figure Artifacts).
 

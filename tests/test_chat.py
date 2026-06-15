@@ -12,6 +12,7 @@ from backend.domain.models import ChatCitation, ChunkRecord
 from backend.services.chat import (
     _extract_citations,
     _build_direct_search_answer,
+    _hydrate_citations,
     build_chat_response,
     build_query_rescue,
     local_preview_chat,
@@ -419,6 +420,77 @@ class ChatServiceTests(unittest.TestCase):
 
         self.assertEqual(len(citations), 1)
         self.assertEqual(citations[0].image_evidence, [])
+
+    def test_hydrate_citations_injects_figure_text_by_page(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            intermediate_path = Path(temp_dir) / "intermediate.json"
+            intermediate_path.write_text(
+                json.dumps({"metadata": {"figure_artifacts": []}}), encoding="utf-8"
+            )
+            fake_job = SimpleNamespace(
+                doc_id="doc-trends",
+                file_name="ai-future-trends.pdf",
+                intermediate_path=str(intermediate_path),
+                publish_status=SimpleNamespace(diagnostics={}),
+                external_source_uri=None,
+            )
+            citation = ChatCitation(
+                title="ai-future-trends.pdf",
+                doc_id="doc-trends",
+                snippet="The report discusses adoption momentum across industries.",
+                page_numbers=[4],
+            )
+
+            with (
+                patch(
+                    "backend.services.chat._job_lookup",
+                    return_value=([fake_job], {"doc-trends": fake_job}, {"ai-future-trends.pdf": fake_job}, {}),
+                ),
+                patch("backend.services.chat._native_figure_page_map", return_value={}),
+                patch(
+                    "backend.services.chat._native_figure_text_map",
+                    return_value={"doc-trends": {4: ["Adoption rate 2024: 65% vs 41% in 2023"]}},
+                ),
+            ):
+                hydrated = _hydrate_citations([citation])
+
+        self.assertIn("[Figure text]", hydrated[0].snippet)
+        self.assertIn("65%", hydrated[0].snippet)
+
+    def test_hydrate_citations_skips_figure_text_already_in_snippet(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            intermediate_path = Path(temp_dir) / "intermediate.json"
+            intermediate_path.write_text(
+                json.dumps({"metadata": {"figure_artifacts": []}}), encoding="utf-8"
+            )
+            fake_job = SimpleNamespace(
+                doc_id="doc-trends",
+                file_name="ai-future-trends.pdf",
+                intermediate_path=str(intermediate_path),
+                publish_status=SimpleNamespace(diagnostics={}),
+                external_source_uri=None,
+            )
+            citation = ChatCitation(
+                title="ai-future-trends.pdf",
+                doc_id="doc-trends",
+                snippet="Adoption rate 2024 reached 65 percent across industries.",
+                page_numbers=[4],
+            )
+
+            with (
+                patch(
+                    "backend.services.chat._job_lookup",
+                    return_value=([fake_job], {"doc-trends": fake_job}, {"ai-future-trends.pdf": fake_job}, {}),
+                ),
+                patch("backend.services.chat._native_figure_page_map", return_value={}),
+                patch(
+                    "backend.services.chat._native_figure_text_map",
+                    return_value={"doc-trends": {4: ["Adoption rate 2024 reached 65 percent across industries."]}},
+                ),
+            ):
+                hydrated = _hydrate_citations([citation])
+
+        self.assertNotIn("[Figure text]", hydrated[0].snippet)
 
     @patch("backend.services.chat._search_supporting_chunks")
     def test_extract_citations_supplements_missing_positive_source_from_activity(self, mock_supporting_chunks) -> None:
