@@ -759,6 +759,47 @@ _NATIVE_FIGURE_TEXT_CACHE_LOCK = threading.Lock()
 # captions enrich the answer without drowning the surrounding passage.
 MAX_FIGURE_TEXT_PER_CITATION_CHARS = 320
 
+# Durable on-disk fallbacks for the figure page / text maps. These maps are normally
+# rebuilt from the knowledge-store metadata + text blob containers, but those reads fail
+# when the storage account firewall is locked down. Persisting the last good map lets the
+# portal keep attaching native crops and figure text (in hybrid / agentic / vector /
+# full_text modes) even when Blob is unreachable, mirroring the on-disk image cache.
+_NATIVE_FIGURE_PAGE_MAP_DISK = settings.data_dir / "native_figure_page_map.json"
+_NATIVE_FIGURE_TEXT_MAP_DISK = settings.data_dir / "native_figure_text_map.json"
+
+
+def _persist_figure_map(path: Path, figure_map: dict[str, dict[int, list[str]]]) -> None:
+    # Best-effort durable cache; never fail a chat turn because we could not persist.
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(figure_map), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _load_figure_map_from_disk(path: Path) -> dict[str, dict[int, list[str]]]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    restored: dict[str, dict[int, list[str]]] = {}
+    for doc_id, pages in raw.items():
+        if not isinstance(pages, dict):
+            continue
+        page_bucket: dict[int, list[str]] = {}
+        for page_key, values in pages.items():
+            try:
+                page = int(page_key)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(values, list):
+                page_bucket[page] = [str(v) for v in values if v]
+        if page_bucket:
+            restored[doc_id] = page_bucket
+    return restored
+
 
 def _decode_doc_id_from_asset_name(name: str) -> str:
     """Decode a knowledge-store projection blob name back to its source doc id.
@@ -848,12 +889,20 @@ def _build_native_figure_page_map() -> dict[str, dict[int, list[str]]]:
 
 def _native_figure_page_map() -> dict[str, dict[int, list[str]]]:
     """Return the native figure page map, cached for a short TTL to avoid listing /
-    downloading the metadata projections on every chat turn."""
+    downloading the metadata projections on every chat turn.
+
+    Falls back to the last good on-disk copy when the live build comes back empty
+    (e.g. the storage firewall is locked down and Blob is unreachable).
+    """
     now = time.monotonic()
     with _NATIVE_FIGURE_CACHE_LOCK:
         if now < _NATIVE_FIGURE_CACHE["expires"] and _NATIVE_FIGURE_CACHE["map"]:
             return _NATIVE_FIGURE_CACHE["map"]
     figure_map = _build_native_figure_page_map()
+    if figure_map:
+        _persist_figure_map(_NATIVE_FIGURE_PAGE_MAP_DISK, figure_map)
+    else:
+        figure_map = _load_figure_map_from_disk(_NATIVE_FIGURE_PAGE_MAP_DISK)
     with _NATIVE_FIGURE_CACHE_LOCK:
         _NATIVE_FIGURE_CACHE["map"] = figure_map
         _NATIVE_FIGURE_CACHE["expires"] = now + _NATIVE_FIGURE_CACHE_TTL_SECONDS
@@ -947,12 +996,20 @@ def _build_native_figure_text_map() -> dict[str, dict[int, list[str]]]:
 
 def _native_figure_text_map() -> dict[str, dict[int, list[str]]]:
     """Return the native figure text map, cached for a short TTL to avoid listing /
-    downloading the text projections on every chat turn."""
+    downloading the text projections on every chat turn.
+
+    Falls back to the last good on-disk copy when the live build comes back empty
+    (e.g. the storage firewall is locked down and Blob is unreachable).
+    """
     now = time.monotonic()
     with _NATIVE_FIGURE_TEXT_CACHE_LOCK:
         if now < _NATIVE_FIGURE_TEXT_CACHE["expires"] and _NATIVE_FIGURE_TEXT_CACHE["map"]:
             return _NATIVE_FIGURE_TEXT_CACHE["map"]
     text_map = _build_native_figure_text_map()
+    if text_map:
+        _persist_figure_map(_NATIVE_FIGURE_TEXT_MAP_DISK, text_map)
+    else:
+        text_map = _load_figure_map_from_disk(_NATIVE_FIGURE_TEXT_MAP_DISK)
     with _NATIVE_FIGURE_TEXT_CACHE_LOCK:
         _NATIVE_FIGURE_TEXT_CACHE["map"] = text_map
         _NATIVE_FIGURE_TEXT_CACHE["expires"] = now + _NATIVE_FIGURE_TEXT_CACHE_TTL_SECONDS

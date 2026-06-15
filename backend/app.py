@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -56,12 +57,73 @@ _WORKSHOP_PROFILE_TITLES = {profile.id: profile.title for profile in build_works
 _NATIVE_IMAGE_CACHE: "OrderedDict[str, tuple[bytes, str]]" = OrderedDict()
 _NATIVE_IMAGE_CACHE_MAX_ENTRIES = 256
 
+# On-disk cache for served native crops. Crops are immutable once the skillset projects
+# them, so persisting each fetched image lets the portal keep rendering figures even after
+# the storage account firewall is locked down (Blob becomes unreachable). The in-memory
+# LRU above stays the fast path; this is the durable fallback that survives restarts.
+_NATIVE_IMAGE_DISK_CACHE_DIR = settings.data_dir / "native_image_cache"
+_NATIVE_IMAGE_EXT_BY_TYPE = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "image/bmp": ".bmp",
+    "image/tiff": ".tiff",
+}
+_NATIVE_IMAGE_TYPE_BY_EXT = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".bmp": "image/bmp",
+    ".tiff": "image/tiff",
+    ".bin": "application/octet-stream",
+}
+
 
 def _native_image_cache_put(key: str, content: bytes, content_type: str) -> None:
     _NATIVE_IMAGE_CACHE[key] = (content, content_type)
     _NATIVE_IMAGE_CACHE.move_to_end(key)
     while len(_NATIVE_IMAGE_CACHE) > _NATIVE_IMAGE_CACHE_MAX_ENTRIES:
         _NATIVE_IMAGE_CACHE.popitem(last=False)
+
+
+def _native_image_disk_key(normalized: str) -> str:
+    """Stable, filesystem-safe key for a native blob path.
+
+    Blob names contain ``/`` and base64url characters, so hash them to a flat
+    filename for the on-disk cache.
+    """
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _native_image_disk_lookup(normalized: str) -> tuple[bytes, str] | None:
+    cache_dir = _NATIVE_IMAGE_DISK_CACHE_DIR
+    if not cache_dir.exists():
+        return None
+    key = _native_image_disk_key(normalized)
+    for candidate in cache_dir.glob(f"{key}.*"):
+        if not candidate.is_file():
+            continue
+        content_type = _NATIVE_IMAGE_TYPE_BY_EXT.get(candidate.suffix.lower(), "application/octet-stream")
+        try:
+            return candidate.read_bytes(), content_type
+        except OSError:
+            return None
+    return None
+
+
+def _native_image_disk_save(normalized: str, content: bytes, content_type: str) -> None:
+    # Best-effort cache; never fail a request because we could not persist locally.
+    try:
+        _NATIVE_IMAGE_DISK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        ext = _NATIVE_IMAGE_EXT_BY_TYPE.get((content_type or "").lower(), ".bin")
+        target = _NATIVE_IMAGE_DISK_CACHE_DIR / f"{_native_image_disk_key(normalized)}{ext}"
+        target.write_bytes(content)
+    except OSError:
+        pass
 
 
 def _job_or_404(doc_id: str) -> JobRecord:
@@ -477,12 +539,35 @@ def get_native_image(path: str) -> Response:
             headers={"Cache-Control": "public, max-age=86400"},
         )
     store = build_blob_search_asset_store()
-    if store is None:
-        raise HTTPException(status_code=503, detail="Azure AI Search native image serving is not configured.")
-    try:
-        content, content_type = store.download_bytes(normalized)
-    except Exception as exc:
-        raise HTTPException(status_code=404, detail=f"Native image asset not found: {exc}") from exc
+    content: bytes | None = None
+    content_type = "application/octet-stream"
+    if store is not None:
+        try:
+            content, content_type = store.download_bytes(normalized)
+        except Exception as exc:
+            # Blob storage can be unreachable (e.g. the storage account firewall is
+            # locked down). Fall back to the on-disk cache instead of a broken image.
+            logger.warning(
+                "native image blob download failed; falling back to local cache",
+                extra={"context": {"path": normalized, "error": str(exc)}},
+            )
+            content = None
+    if content is not None:
+        # Persist so the figure stays servable once the storage firewall is locked down.
+        _native_image_disk_save(normalized, content, content_type)
+    else:
+        disk = _native_image_disk_lookup(normalized)
+        if disk is None:
+            if store is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Azure AI Search native image serving is not configured.",
+                )
+            raise HTTPException(
+                status_code=404,
+                detail="Native image asset not found (cloud unreachable and no local copy cached).",
+            )
+        content, content_type = disk
     _native_image_cache_put(normalized, content, content_type)
     # Crops are immutable once projected, so let the browser cache them for a day to
     # avoid re-fetching the same figure on every answer re-render.
