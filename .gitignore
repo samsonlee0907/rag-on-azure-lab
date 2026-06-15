@@ -16,6 +16,9 @@ data/artifacts/*
 !data/artifacts/.gitkeep
 data/job_store.json
 data/*.pdf
+data/native_image_cache/
+data/native_figure_page_map.json
+data/native_figure_text_map.json
 
 server-live.stdout.log
 server-live.stderr.log

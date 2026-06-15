@@ -478,12 +478,18 @@ def build_adapter():
 
 
 def route_preview(question: str, *, include_enrichment: bool = False) -> dict[str, Any]:
-    """Show how the knowledge base would route ``question`` across indexes.
+    """Show how the **direct-search** keyword router would scope ``question``.
 
-    This calls the same ``_route_knowledge_sources`` logic the live retrieve
-    path uses, but stops *before* issuing any search request, so it is fast and
-    free. Returns a compact, notebook-friendly view of the decision: the routing
-    mode, the indexes that were selected, and the per-source terms that matched.
+    This calls the same ``_route_knowledge_sources`` logic the direct-search
+    retrieve path (full_text / vector / hybrid) uses, but stops *before* issuing
+    any search request, so it is fast and free. Returns a compact,
+    notebook-friendly view of the decision: the routing mode, the indexes that
+    were selected, and the per-source terms that matched.
+
+    Note: agentic retrieval does **not** use this keyword router. The agentic
+    ``chat`` path delegates source selection to the LLM query planner
+    (``routing_mode: planner_delegated``) and hands every publishable source to
+    the knowledge base, so this preview reflects only the direct-search path.
     """
     adapter = build_adapter()
     if not hasattr(adapter, "_route_knowledge_sources"):

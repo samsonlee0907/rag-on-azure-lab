@@ -154,7 +154,7 @@ with the figure's actual numbers.
 | `AZURE_SEARCH_ENABLE_ANSWER_SYNTHESIS` | Synthesized answer versus raw extractive retrieval. | Toggle on and off to contrast the output styles. |
 | `AZURE_SEARCH_LLM_REASONING_EFFORT` | How much effort the retrieve path spends on planning. | `low` (the default) and `medium` send the query to the LLM for subquery planning and knowledge-source selection; `minimal` skips planning and issues the query directly. Compare `minimal` vs `low` vs `medium`. |
 | `AZURE_SEARCH_EXTRA_SOURCES_JSON` | Additional knowledge sources for cross-index routing. | Use when you want a multi-corpus lab run. |
-| `AZURE_SEARCH_AUTO_BROADCAST_LIMIT` | How aggressively the app fans out across configured knowledge sources. | Raise it if you want broader agentic routing demos. |
+| `AZURE_SEARCH_AUTO_BROADCAST_LIMIT` | How aggressively the **direct-search** keyword router fans out across configured knowledge sources. Agentic retrieval ignores this and delegates source selection to the LLM planner. | Raise it for broader direct-search fan-out demos. |
 
 ## Best-Practice Takeaways
 

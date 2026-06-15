@@ -732,6 +732,42 @@ class ChatServiceTests(unittest.TestCase):
             ),
         ),
     )
+    @patch("backend.services.indexing.AzureSearchKnowledgeBaseAdapter._published_document_terms_for_source", return_value=set())
+    def test_route_knowledge_sources_delegates_all_sources_to_planner(self, _mock_terms) -> None:
+        adapter = AzureSearchKnowledgeBaseAdapter()
+
+        # The agentic chat path delegates source selection to the LLM planner, so a
+        # cross-domain question that only keyword-matches one specialized corpus must
+        # still pass every publishable source rather than narrowing to the match.
+        selected, diagnostics = adapter._route_knowledge_sources(
+            "How does construction safety interact with grid capacity?",
+            delegate_to_planner=True,
+        )
+
+        self.assertEqual(
+            [source.knowledge_source_name for source in selected],
+            ["ai-search-lab-source", "construction-source", "energy-source"],
+        )
+        self.assertTrue(diagnostics["multi_index_routing"])
+        self.assertEqual(diagnostics["routing_mode"], "planner_delegated")
+
+    @patch(
+        "backend.services.indexing.settings.azure_search_extra_sources",
+        new=(
+            SearchKnowledgeSourceConfig(
+                knowledge_source_name="construction-source",
+                index_name="construction-index",
+                description="Construction safety schedules BIM delivery",
+                route_keywords=("construction", "bim", "safety"),
+            ),
+            SearchKnowledgeSourceConfig(
+                knowledge_source_name="energy-source",
+                index_name="energy-index",
+                description="Power demand grid transmission generation data centers",
+                route_keywords=("power", "grid", "energy", "data center"),
+            ),
+        ),
+    )
     def test_route_knowledge_sources_uses_all_indexes_for_cross_source_queries(self) -> None:
         adapter = AzureSearchKnowledgeBaseAdapter()
 

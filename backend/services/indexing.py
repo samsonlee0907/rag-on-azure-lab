@@ -540,15 +540,20 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
             doc_ids=doc_ids,
             doc_source_assignments=doc_source_assignments,
             include_enrichment=True,
+            delegate_to_planner=True,
         )
         selected_sources, membership_diagnostics = self._reconcile_with_knowledge_base(selected_sources)
         routing_diagnostics.update(membership_diagnostics)
         grouped_doc_ids = self._group_doc_ids_by_source(doc_ids or [], doc_source_assignments or {})
+        # Without an explicit document scope, leave alwaysQuerySource unset so the
+        # planner decides which sources to query per subquery (the documented agentic
+        # behavior). With a user-selected corpus (doc_ids), force every assigned source
+        # so the scope constraint is honored exactly.
         knowledge_source_params = [
             self._build_knowledge_source_params(
                 source,
                 doc_ids=grouped_doc_ids.get(source.knowledge_source_name),
-                force_query=len(selected_sources) > 1 or bool(doc_ids),
+                force_query=bool(doc_ids),
             )
             for source in selected_sources
         ]
@@ -1318,6 +1323,7 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
         doc_ids: list[str] | None = None,
         doc_source_assignments: dict[str, str] | None = None,
         include_enrichment: bool = True,
+        delegate_to_planner: bool = False,
     ) -> tuple[list[SearchKnowledgeSourceConfig], dict[str, Any]]:
         configured_sources = self._retrieval_knowledge_sources()
         publishable_sources = self._publishable_knowledge_sources()
@@ -1371,6 +1377,42 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
 
         question_lower = question.lower()
         tokens = self._tokenize_routing_text(question_lower)
+
+        if delegate_to_planner:
+            # Agentic retrieval delegates source selection to the LLM query planner.
+            # Per the Azure AI Search agentic retrieval design, the planner decomposes
+            # the question into focused subqueries and selects the most relevant
+            # knowledge sources itself. The app therefore hands every publishable corpus
+            # to the planner instead of pre-filtering by brittle filename keywords, which
+            # would otherwise drop a relevant corpus for cross-domain questions (for
+            # example excluding "Deep Excavation Design and Construction.pdf" from a
+            # question about ground inspection that never mentions "excavation").
+            selected = list(publishable_sources)
+            diagnostics.update(
+                {
+                    "routing_mode": "planner_delegated",
+                    "routing_reason": (
+                        "All configured corpus indexes were handed to the agentic retrieval planner, which "
+                        "decomposes the question into subqueries and selects the most relevant sources per subquery."
+                    ),
+                }
+            )
+            if (
+                include_enrichment
+                and enrichment_source
+                and enrichment_source not in selected
+                and self._should_include_enrichment_source(question_lower, tokens)
+            ):
+                selected = [*selected, enrichment_source]
+                diagnostics["routing_reason"] = (
+                    f"{diagnostics['routing_reason']} The Blob skillset enrichment index was also included because the "
+                    "question appears to ask for summaries, diagrams, images, or other enrichment-heavy signals."
+                )
+            diagnostics["selected_knowledge_sources"] = [source.knowledge_source_name for source in selected]
+            diagnostics["selected_search_indexes"] = [source.index_name for source in selected]
+            diagnostics["multi_index_routing"] = len(selected) > 1
+            return selected, diagnostics
+
         cross_source_intent = self._has_cross_source_intent(question_lower, tokens)
         # The enrichment (Blob skillset) index uses a different projected schema that
         # lacks the canonical fields direct_search selects (chunk_id, clean_text, ...).
