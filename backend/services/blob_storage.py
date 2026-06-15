@@ -104,10 +104,11 @@ class BaseBlobStore:
     def download_bytes(self, blob_name: str) -> tuple[bytes, str]:
         blob_client = self._client.get_blob_client(container=self.container_name, blob=blob_name)
         downloader = blob_client.download_blob()
-        properties = blob_client.get_blob_properties()
-        content_type = (
-            properties.content_settings.content_type if properties.content_settings else None
-        ) or "application/octet-stream"
+        # The downloader already carries the blob's properties from the initial
+        # response, so read the content type from there instead of issuing a
+        # second round trip via get_blob_properties().
+        content_settings = getattr(downloader.properties, "content_settings", None)
+        content_type = (content_settings.content_type if content_settings else None) or "application/octet-stream"
         return downloader.readall(), content_type
 
     def delete_blob(self, blob_name: str) -> None:
@@ -167,4 +168,14 @@ def build_blob_search_asset_store() -> BlobSearchAssetStore | None:
         and (settings.azure_search_asset_store_connection_string or settings.azure_search_blob_connection_string_resolved)
     ):
         return None
-    return BlobSearchAssetStore()
+    global _BLOB_SEARCH_ASSET_STORE
+    if _BLOB_SEARCH_ASSET_STORE is None:
+        # Reuse a single store (and its BlobServiceClient / AzureCliCredential) across
+        # requests. AzureCliCredential caches access tokens in-memory per instance, so
+        # sharing it avoids a fresh `az` token shell-out on every image fetch — the main
+        # source of the multi-second latency when serving native crops.
+        _BLOB_SEARCH_ASSET_STORE = BlobSearchAssetStore()
+    return _BLOB_SEARCH_ASSET_STORE
+
+
+_BLOB_SEARCH_ASSET_STORE: BlobSearchAssetStore | None = None

@@ -194,7 +194,7 @@ class Settings:
     )
     azure_search_enable_native_multimodal_retrieval: bool = _env_flag(
         "AZURE_SEARCH_ENABLE_NATIVE_MULTIMODAL_RETRIEVAL",
-        False,
+        True,
     )
     azure_search_require_blob_skillset_success: bool = _env_flag(
         "AZURE_SEARCH_REQUIRE_BLOB_SKILLSET_SUCCESS",
@@ -226,13 +226,17 @@ class Settings:
         "AZURE_SEARCH_NATIVE_CONTENT_EXTRACTION_MODE",
         "standard",
     ).strip().lower()
+    # The native `contentExtractionMode=standard` lane verbalizes images through the
+    # Content Understanding skill, which only accepts a fixed set of completion models
+    # (gpt-4.1*, gpt-4o*, gpt-5.2). `gpt-5.4-mini` is NOT supported there, so the native
+    # chat-completion deployment must point at a CU-compatible model (default: gpt-5.2).
     azure_search_native_chat_completion_deployment: str = os.getenv(
         "AZURE_SEARCH_NATIVE_CHAT_COMPLETION_DEPLOYMENT",
-        "gpt-5-4-mini-native",
+        "gpt-5-2-native",
     )
     azure_search_native_chat_completion_model_name: str = os.getenv(
         "AZURE_SEARCH_NATIVE_CHAT_COMPLETION_MODEL_NAME",
-        "gpt-5.4-mini",
+        "gpt-5.2",
     )
     azure_search_native_retrieve_retry_attempts: int = int(
         os.getenv("AZURE_SEARCH_NATIVE_RETRIEVE_RETRY_ATTEMPTS", "3")
@@ -297,7 +301,7 @@ class Settings:
         "AZURE_SEARCH_BLOB_RBAC_METADATA_FIELD",
         "rbac_scope_ids",
     )
-    azure_search_enable_image_serving: bool = _env_flag("AZURE_SEARCH_ENABLE_IMAGE_SERVING", False)
+    azure_search_enable_image_serving: bool = _env_flag("AZURE_SEARCH_ENABLE_IMAGE_SERVING", True)
     azure_search_asset_store_connection_string: str = os.getenv(
         "AZURE_SEARCH_ASSET_STORE_CONNECTION_STRING",
         "",
@@ -305,6 +309,10 @@ class Settings:
     azure_search_asset_store_container: str = os.getenv(
         "AZURE_SEARCH_ASSET_STORE_CONTAINER",
         "search-image-assets",
+    )
+    azure_search_asset_store_metadata_container: str = os.getenv(
+        "AZURE_SEARCH_ASSET_STORE_METADATA_CONTAINER",
+        "search-image-assets-meta",
     )
     azure_openai_embedding_deployment: str = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "")
     azure_openai_embedding_model_name: str = os.getenv(
@@ -368,6 +376,15 @@ class Settings:
         return bool(self.azure_foundry_resource_endpoint or self.azure_foundry_api_key)
 
     @property
+    def azure_search_document_layout_skill_available(self) -> bool:
+        # The GA Search `#Microsoft.Skills.Util.DocumentIntelligenceLayoutSkill` is
+        # resource-attached the same way as Content Understanding: it runs against the
+        # billable Foundry / AI Services resource declared in the skillset's
+        # `cognitiveServices` block (managed identity preferred, key fallback), so it
+        # needs no standalone Document Intelligence endpoint/key.
+        return bool(self.azure_foundry_resource_endpoint or self.azure_foundry_api_key)
+
+    @property
     def azure_search_enabled(self) -> bool:
         return bool(self.azure_search_endpoint and self.azure_search_key)
 
@@ -410,6 +427,13 @@ class Settings:
     def parser_figure_extraction_enabled(self) -> bool:
         if self.enable_parser_figure_extraction:
             return True
+        # When the Azure-native multimodal lane is the default indexing path,
+        # figure cropping is delegated to the managed Document Layout pipeline
+        # (knowledge source `contentExtractionMode`), so the offline render-then-crop
+        # parser is skipped to avoid duplicate heavy-lifting. It stays available as an
+        # explicit opt-in via ENABLE_PARSER_FIGURE_EXTRACTION=true (handled above).
+        if self.azure_search_native_multimodal_enabled:
+            return False
         return self.workshop_skill_profile in {"visual_nlp", "content_understanding"}
 
     @property

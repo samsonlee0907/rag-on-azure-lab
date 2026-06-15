@@ -416,6 +416,10 @@ class AzureSearchSkillsetEnrichmentService:
             # single content string, so merge them into /document/content_markdown to feed
             # the same downstream graph (prompt seed, summary, keywords, embeddings).
             skills.append(self._build_content_understanding_merge_skill())
+        if extractor_kind == "document_layout":
+            # The Document Layout skill likewise emits chunked `dl_text_sections`; merge them
+            # into /document/content_markdown so the rest of the enrichment graph is identical.
+            skills.append(self._build_document_layout_merge_skill())
         if self._profile_uses_split(active_profile):
             skills.append(self._build_split_skill())
         if self._profile_uses_visual_nlp(active_profile):
@@ -467,6 +471,9 @@ class AzureSearchSkillsetEnrichmentService:
             ),
             "skills": skills,
         }
+        knowledge_store = self._build_figure_knowledge_store(extractor_kind=extractor_kind)
+        if knowledge_store:
+            skillset["knowledgeStore"] = knowledge_store
         if settings.azure_foundry_resource_endpoint:
             skillset["cognitiveServices"] = {
                 "@odata.type": "#Microsoft.Azure.Search.AIServicesByIdentity",
@@ -497,6 +504,20 @@ class AzureSearchSkillsetEnrichmentService:
                     "Set AZURE_FOUNDRY_RESOURCE_ENDPOINT (preferred, managed identity) "
                     "or AZURE_FOUNDRY_API_KEY so the resource-attached skill can run."
                 )
+        wants_document_layout = (
+            settings.azure_search_skillset_preferred_extractor == "document_layout"
+        )
+        if wants_document_layout:
+            if settings.azure_search_document_layout_skill_available:
+                return "document_layout"
+            if settings.workshop_strict_mode:
+                raise RuntimeError(
+                    "The skillset is configured to use the Azure Document Layout skill "
+                    "(AZURE_SEARCH_SKILLSET_PREFERRED_EXTRACTOR=document_layout), but no billable "
+                    "Foundry / AI Services resource is attached to the skillset. Set "
+                    "AZURE_FOUNDRY_RESOURCE_ENDPOINT (preferred, managed identity) or "
+                    "AZURE_FOUNDRY_API_KEY so the resource-attached skill can run."
+                )
         return "document_extraction"
 
     def _build_extractor_skill(self, *, extractor_kind: str | None = None) -> dict[str, Any]:
@@ -522,6 +543,33 @@ class AzureSearchSkillsetEnrichmentService:
                 "inputs": [{"name": "file_data", "source": "/document/file_data"}],
                 "outputs": [
                     {"name": "text_sections", "targetName": "cu_text_sections"},
+                ],
+            }
+        if active_extractor == "document_layout":
+            # `#Microsoft.Skills.Util.DocumentIntelligenceLayoutSkill` is resource-attached
+            # (binds to the billable Foundry / AI Services resource in the skillset's
+            # `cognitiveServices` block). With `extractionOptions=["images","locationMetadata"]`
+            # it does figure-aware image cropping server-side and emits each crop under
+            # `/document/normalized_images/*` together with its `pageNumber` + `boundingPolygons`
+            # location metadata. The chunked `text_sections` are merged into
+            # /document/content_markdown to feed the same downstream enrichment graph.
+            return {
+                "@odata.type": "#Microsoft.Skills.Util.DocumentIntelligenceLayoutSkill",
+                "name": "#documentLayout",
+                "context": "/document",
+                "description": "Resource-attached Azure Document Layout extractor: figure-aware image crops + page/bounding-polygon location metadata for multimodal Blob enrichment.",
+                "outputMode": "oneToMany",
+                "outputFormat": "text",
+                "extractionOptions": ["images", "locationMetadata"],
+                "chunkingProperties": {
+                    "unit": "characters",
+                    "maximumLength": 2000,
+                    "overlapLength": 200,
+                },
+                "inputs": [{"name": "file_data", "source": "/document/file_data"}],
+                "outputs": [
+                    {"name": "text_sections", "targetName": "dl_text_sections"},
+                    {"name": "normalized_images", "targetName": "normalized_images"},
                 ],
             }
         return {
@@ -562,6 +610,60 @@ class AzureSearchSkillsetEnrichmentService:
                 {"name": "itemsToInsert", "source": "/document/cu_text_sections/*/content"}
             ],
             "outputs": [{"name": "mergedText", "targetName": "content_markdown"}],
+        }
+
+    def _build_document_layout_merge_skill(self) -> dict[str, Any]:
+        # The Document Layout skill emits chunked `dl_text_sections` (each with a `content`
+        # string), so merge them into /document/content_markdown to feed the same downstream
+        # graph (split, prompt seed, summary, keywords, embeddings) used by every other profile.
+        return {
+            "@odata.type": "#Microsoft.Skills.Text.MergeSkill",
+            "name": "#mergeDocumentLayout",
+            "context": "/document",
+            "insertPreTag": "",
+            "insertPostTag": "\n\n",
+            "inputs": [
+                {"name": "itemsToInsert", "source": "/document/dl_text_sections/*/content"}
+            ],
+            "outputs": [{"name": "mergedText", "targetName": "content_markdown"}],
+        }
+
+    def _figure_knowledge_store_connection_string(self) -> str:
+        return (
+            settings.azure_search_asset_store_connection_string
+            or settings.azure_search_blob_connection_string_resolved
+        )
+
+    def _build_figure_knowledge_store(self, *, extractor_kind: str) -> dict[str, Any] | None:
+        # Persist the Document Layout skill's figure crops + per-figure location metadata to
+        # blob so they can be served back as citation evidence (the Azure-native equivalent
+        # of the offline parser's local `_figures/` PNGs). Only the Document Layout path emits
+        # figure-aware crops with bounding polygons, so the projection is scoped to it.
+        if extractor_kind != "document_layout" or not settings.azure_search_enable_image_serving:
+            return None
+        connection_string = self._figure_knowledge_store_connection_string()
+        if not connection_string:
+            return None
+        return {
+            "storageConnectionString": connection_string,
+            "projections": [
+                {
+                    "files": [
+                        {
+                            "storageContainer": settings.azure_search_asset_store_container,
+                            "source": "/document/normalized_images/*",
+                        }
+                    ]
+                },
+                {
+                    "objects": [
+                        {
+                            "storageContainer": settings.azure_search_asset_store_metadata_container,
+                            "source": "/document/normalized_images/*",
+                        }
+                    ]
+                },
+            ],
         }
 
     def _build_prompt_seed_split_skill(self) -> dict[str, Any]:
@@ -763,7 +865,13 @@ class AzureSearchSkillsetEnrichmentService:
                 "configuration": {
                     "dataToExtract": "contentAndMetadata",
                     "allowSkillsetToReadFileData": True,
-                    "imageAction": "generateNormalizedImages",
+                    # The Document Layout skill performs its own figure-aware image cropping
+                    # from `file_data`, so the indexer's built-in image cracker is turned off
+                    # to avoid emitting duplicate whole-page normalized images. Every other
+                    # extractor relies on the indexer to generate normalized images.
+                    "imageAction": (
+                        "none" if extractor_kind == "document_layout" else "generateNormalizedImages"
+                    ),
                     "parsingMode": "default",
                     "failOnUnsupportedContentType": False,
                     "indexedFileNameExtensions": ".pdf,.docx,.pptx,.txt,.md,.html",

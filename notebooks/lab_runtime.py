@@ -333,6 +333,121 @@ def chunk_overview(job) -> dict[str, Any]:
     }
 
 
+def _docid_from_asset_name(name: str) -> str:
+    """Decode a knowledge-store projection blob name back to its source doc id.
+
+    Projection blobs are named ``base64url(source_uri)/normalized_image*`` where
+    ``source_uri`` contains ``.../workshop/<doc_id>/<file>``.
+    """
+    import base64
+    import re
+
+    prefix = name.split("/normalized_image")[0]
+    pad = "=" * (-len(prefix) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(prefix + pad).decode("utf-8", "replace")
+    except Exception:
+        return ""
+    match = re.search(r"workshop/([0-9a-f]{32})/", decoded)
+    return match.group(1) if match else ""
+
+
+def enrichment_visual_fields(job, *, top: int = 25) -> dict[str, Any]:
+    """Read the Document Layout / visual-NLP enrichment fields for ``job``'s document.
+
+    Queries the per-profile enrichment index (``...-visual-nlp``) for the document and
+    returns the OCR + caption collections the Search skillset produced server-side. The
+    enrichment index does not populate ``doc_id``, so we fetch the most recent rows and
+    match on the ``source_uri`` that carries the document id.
+    """
+    import requests
+    from backend.core.config import settings
+    from backend.services.workshop_profiles import get_workshop_skill_profile
+
+    with active_profile(job.skill_profile_id):
+        index_name = get_workshop_skill_profile().target_index_name
+    endpoint = settings.azure_search_endpoint.rstrip("/")
+    resp = requests.post(
+        f"{endpoint}/indexes/{index_name}/docs/search?api-version=2025-09-01",
+        headers={"api-key": settings.azure_search_key, "Content-Type": "application/json"},
+        json={
+            "search": "*",
+            "orderby": "last_updated desc",
+            "top": top,
+            "select": "source_uri,last_updated,image_description_chunks,ocr_text_chunks,detected_language",
+        },
+        timeout=60,
+    )
+    resp.raise_for_status()
+    rows = resp.json().get("value", [])
+    match = next((r for r in rows if job.doc_id in (r.get("source_uri") or "")), None)
+    if not match:
+        return {"index_name": index_name, "found": False}
+    captions = match.get("image_description_chunks") or []
+    ocr = match.get("ocr_text_chunks") or []
+    ocr_nonempty = [t for t in ocr if t and t.strip()]
+    return {
+        "index_name": index_name,
+        "found": True,
+        "detected_language": match.get("detected_language"),
+        "image_description_count": len(captions),
+        "image_description_sample": captions[:5],
+        "ocr_count": len(ocr),
+        "ocr_nonempty_count": len(ocr_nonempty),
+        "ocr_sample": ocr_nonempty[:5],
+    }
+
+
+def figure_assets(job, *, limit: int = 5) -> dict[str, Any]:
+    """List the knowledge-store figure crops + per-figure location metadata for ``job``.
+
+    The Document Layout skill crops figures server-side and the skillset's knowledge-store
+    projections persist each crop to the asset container and its ``pageNumber`` +
+    ``boundingPolygons`` to the metadata container. This returns the counts plus a few
+    location-metadata samples so a notebook can show the figure-aware, location-aware output.
+    """
+    import json
+
+    from backend.core.config import settings
+    from backend.services.blob_storage import BaseBlobStore, build_blob_search_asset_store
+
+    store = build_blob_search_asset_store()
+    if store is None:
+        return {"crops": 0, "metadata": 0, "samples": [], "configured": False}
+    crops = [n for n in store.list_blobs() if _docid_from_asset_name(n) == job.doc_id]
+    meta_store = BaseBlobStore(
+        container_name=settings.azure_search_asset_store_metadata_container,
+        connection_string=(
+            settings.azure_search_asset_store_connection_string
+            or settings.azure_search_blob_connection_string_resolved
+        ),
+        account_url=settings.azure_blob_account_url,
+        account_key=settings.azure_storage_account_key,
+    )
+    meta_names = [n for n in meta_store.list_blobs() if _docid_from_asset_name(n) == job.doc_id]
+    samples: list[dict[str, Any]] = []
+    for name in sorted(meta_names)[:limit]:
+        payload, _ = meta_store.download_bytes(name)
+        try:
+            doc = json.loads(payload)
+        except Exception:
+            continue
+        location = doc.get("locationMetadata") or {}
+        samples.append(
+            {
+                "image": doc.get("name"),
+                "page": location.get("pageNumber"),
+                "bounding_polygons": location.get("boundingPolygons"),
+            }
+        )
+    return {
+        "crops": len(crops),
+        "metadata": len(meta_names),
+        "samples": samples,
+        "configured": True,
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Retrieval
 # --------------------------------------------------------------------------- #

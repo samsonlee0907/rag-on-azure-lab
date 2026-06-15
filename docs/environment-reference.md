@@ -127,6 +127,12 @@ The app-managed parser path and the Search-managed Blob skillset lane are separa
 
 The workshop flow uploads the original file to Blob, runs Azure AI Search pull-based enrichment, then merges selected enrichment fields back into the canonical app-managed chunk set.
 
+`AZURE_SEARCH_SKILLSET_PREFERRED_EXTRACTOR` selects how each document is cracked before enrichment:
+
+- `document_extraction` (default) - Search-managed extraction; the indexer emits whole-page normalized images.
+- `content_understanding` - resource-attached Content Understanding skill with semantic chunking (lab 08 / full-managed lane).
+- `document_layout` - resource-attached `DocumentIntelligenceLayoutSkill`; it performs figure-aware image cropping server-side and emits each crop with its page number and bounding polygons. The crops are persisted to the asset store via knowledge-store projections (binary crop -> `AZURE_SEARCH_ASSET_STORE_CONTAINER`, per-figure location metadata -> `AZURE_SEARCH_ASSET_STORE_METADATA_CONTAINER`) and feed the same OCR / Image Analysis enrichment as the visual profile (labs 06/07/09 / Option 1). Requires a billable Foundry / AI Services resource (`AZURE_FOUNDRY_RESOURCE_ENDPOINT` or `AZURE_FOUNDRY_API_KEY`). When this extractor is active the indexer's built-in image cracking (`imageAction`) is disabled so the layout skill is the sole source of normalized images.
+
 Recommended core workshop defaults:
 
 - `WORKSHOP_SKILL_PROFILE=baseline_extract`
@@ -196,7 +202,7 @@ Recommended workshop pattern:
 
 The app uses the Foundry chat deployment to synthesize grounded answers for the direct `full_text`, `vector`, and `hybrid` modes after Azure AI Search returns the matching chunk set.
 
-## Optional Native Multimodal Extension
+## Native Multimodal Indexing (Default Path)
 
 - `AZURE_SEARCH_ENABLE_NATIVE_MULTIMODAL_RETRIEVAL`
 - `AZURE_SEARCH_NATIVE_API_VERSION`
@@ -212,14 +218,17 @@ The app uses the Foundry chat deployment to synthesize grounded answers for the 
 - `AZURE_SEARCH_ENABLE_IMAGE_SERVING`
 - `AZURE_SEARCH_ASSET_STORE_CONNECTION_STRING`
 - `AZURE_SEARCH_ASSET_STORE_CONTAINER`
+- `AZURE_SEARCH_ASSET_STORE_METADATA_CONTAINER`
 
-This extension is intentionally outside the core workshop sequence. If enabled, the same Blob upload can also be registered as a file-based Azure AI Search knowledge source with an asset store for image-serving scenarios.
+This is now the **default indexing and retrieval path**. The Blob upload is registered as an `azureBlob` Azure AI Search knowledge source whose managed `contentExtractionMode` runs the Document Layout pipeline server-side: it crops figures, persists them to the asset store, verbalizes/embeds them, and serves them through image-serving URLs. This replaces the offline render-then-crop figure parser for the default run; that parser remains available as an explicit opt-in (see Figure Artifacts).
 
 Recommended core workshop defaults:
 
-- `AZURE_SEARCH_ENABLE_NATIVE_MULTIMODAL_RETRIEVAL=false`
+- `AZURE_SEARCH_ENABLE_NATIVE_MULTIMODAL_RETRIEVAL=true`
 - `AZURE_SEARCH_REQUIRE_NATIVE_MULTIMODAL_SUCCESS=false`
-- `AZURE_SEARCH_ENABLE_IMAGE_SERVING=false`
+- `AZURE_SEARCH_ENABLE_IMAGE_SERVING=true`
+
+To fall back to the offline figure parser lane, set `AZURE_SEARCH_ENABLE_NATIVE_MULTIMODAL_RETRIEVAL=false` and `ENABLE_PARSER_FIGURE_EXTRACTION=true`.
 
 ## Blob Storage
 
@@ -240,12 +249,14 @@ For the core workshop path, leave `AZURE_STORAGE_ACCOUNT_KEY` blank and rely on 
 
 If enabled, the app can stamp default RBAC scopes into uploaded Blob metadata and carry those values into the Search-managed enrichment index and canonical chunks.
 
-## Figure Artifacts
+## Figure Artifacts (Offline Parser — Opt-In)
 
 - `ENABLE_PARSER_FIGURE_EXTRACTION`
 - `ENABLE_IMAGE_UNDERSTANDING`
 - `PARSER_FIGURE_MAX_ARTIFACTS`
 - `MAX_FIGURE_IMAGE_PIXELS`
 - `MAX_FIGURE_IMAGE_DIMENSION`
+
+The offline render-then-crop figure parser is skipped automatically when the native multimodal lane is enabled (the default), since the managed Document Layout pipeline supplies cropped figures instead. Set `ENABLE_PARSER_FIGURE_EXTRACTION=true` to force the offline parser back on (for example when running with `AZURE_SEARCH_ENABLE_NATIVE_MULTIMODAL_RETRIEVAL=false`).
 
 The workshop keeps parser-side figure extraction off in the earlier labs and enables it in the visual or Content Understanding tracks. Large embedded PDF figures are normalized to PNG artifacts. Oversized images are downscaled before GPT-based image understanding so a single large TIFF doesn't fail the whole ingestion job. `PARSER_FIGURE_MAX_ARTIFACTS` puts a practical ceiling on parser-side figure work for very large PDFs.

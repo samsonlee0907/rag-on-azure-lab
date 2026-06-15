@@ -602,14 +602,39 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
         activity: list[dict[str, Any]] = []
         for step, source in enumerate(selected_sources, start=1):
             scoped_doc_ids = grouped_doc_ids.get(source.knowledge_source_name) if grouped_doc_ids else None
-            payload, elapsed_ms = self._run_direct_search(
-                source=source,
-                question=question,
-                retrieval_mode=normalized_mode,
-                doc_ids=scoped_doc_ids,
-                query_vector=query_vector,
-                scoring_profile=applied_scoring_profile,
-            )
+            try:
+                payload, elapsed_ms = self._run_direct_search(
+                    source=source,
+                    question=question,
+                    retrieval_mode=normalized_mode,
+                    doc_ids=scoped_doc_ids,
+                    query_vector=query_vector,
+                    scoring_profile=applied_scoring_profile,
+                )
+            except Exception as exc:
+                # Auto mode can broadcast across heterogeneous indexes. A single index
+                # that rejects the canonical request (e.g. an incompatible schema) must
+                # not fail the whole turn — record it and keep the other sources.
+                logger.warning(
+                    "Direct search skipped knowledge source '%s' (index '%s'): %s",
+                    source.knowledge_source_name,
+                    source.index_name,
+                    exc,
+                )
+                activity.append(
+                    {
+                        "type": "searchIndex",
+                        "id": step,
+                        "knowledgeSourceName": source.knowledge_source_name,
+                        "count": 0,
+                        "elapsedMs": 0,
+                        "searchIndexArguments": {"search": question},
+                        "searchMode": normalized_mode,
+                        "scoringProfile": applied_scoring_profile or DIRECT_SEARCH_DEFAULT_SCORING_PROFILE,
+                        "error": str(exc),
+                    }
+                )
+                continue
             values = payload.get("value") or []
             activity.append(
                 {
@@ -1347,9 +1372,25 @@ class AzureSearchKnowledgeBaseAdapter(FoundryIQAdapter):
         question_lower = question.lower()
         tokens = self._tokenize_routing_text(question_lower)
         cross_source_intent = self._has_cross_source_intent(question_lower, tokens)
+        # The enrichment (Blob skillset) index uses a different projected schema that
+        # lacks the canonical fields direct_search selects (chunk_id, clean_text, ...).
+        # Only the agentic /retrieve path (include_enrichment=True) can query it safely
+        # via per-source field mappings, so when the caller opts out we must keep the
+        # enrichment source out of keyword matching too — otherwise a visual question
+        # ("...any diagram...") routes a raw $select at an index without those fields.
+        match_candidates = (
+            configured_sources
+            if include_enrichment
+            else [
+                source
+                for source in configured_sources
+                if not enrichment_source
+                or source.knowledge_source_name != enrichment_source.knowledge_source_name
+            ]
+        )
         matched_sources: list[SearchKnowledgeSourceConfig] = []
         match_details: list[dict[str, Any]] = []
-        for source in configured_sources:
+        for source in match_candidates:
             matched_terms = self._matched_routing_terms(question_lower, tokens, source)
             if matched_terms:
                 matched_sources.append(source)

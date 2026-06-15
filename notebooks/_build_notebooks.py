@@ -248,64 +248,95 @@ def build_lab06() -> None:
         md(
             "# Lab 06 \u00b7 Image and NLP Enrichment (Notebook Walkthrough)\n\n"
             "**Concept.** The `visual_nlp` profile adds `OcrSkill`, `ImageAnalysisSkill`, and `LanguageDetectionSkill` "
-            "to the Blob skillset. This matters for a diagram-heavy engineering document where evidence can live in "
-            "figures, not just prose.\n\n"
-            "**Where each signal lands (this is the part people get wrong):**\n"
-            "- `ImageAnalysisSkill` and `OcrSkill` run at the per-image context (`/document/normalized_images/*`), so "
-            "their outputs land *under that path*. The indexer output field mappings must therefore read "
-            "`/document/normalized_images/*/...` - and because `description` is a complex `{tags, captions}` object, the "
-            "mapping drills into `captions/*/text` to capture the human-readable caption sentences. These populate the "
-            "**Search-managed enrichment index** (`...-visual-nlp`), which **Agentic** retrieval can draw on.\n"
-            "- The app then merges a **document-level `image_description_text`** (the first several captions) back onto "
-            "every **canonical chunk**, so `full_text` / `vector` / `hybrid` also gain a visual signal.\n"
-            "- The parser additionally attaches **figure thumbnails** (`image_evidence`) to the chunks on a figure's "
-            "page, so the UI can show grounded visuals. Thumbnails are produced by **rendering each page and cropping "
-            "the figure region** - not by pulling the raw embedded image. That matters because engineering PDFs often "
-            "store figures as 1-bit image masks / soft-masked (SMask) stencils whose paint colour lives in the page "
-            "content stream, so the raw bitmap is solid black; rendering composites them faithfully. The same render "
-            "path also captures **vector-drawn charts** (analyst decks) that have no embedded image at all.\n\n"
-            "**Key lesson:** the caption *quality* depends on the document. Image Analysis 3.2 returns descriptive but "
-            "generic captions (\u201ca construction site with cranes and buildings\u201d, \u201cengineering drawing\u201d), "
-            "and OCR on vector-drawn diagrams yields fragmentary text (\u201c17 07 2017\u201d). Always **verify what "
-            "actually landed** instead of assuming."
+            "to the Blob skillset, and switches the Search-managed extractor to the **Document Layout** skill "
+            "(`AZURE_SEARCH_SKILLSET_PREFERRED_EXTRACTOR=document_layout`). This matters for a diagram-heavy "
+            "engineering document where evidence can live in figures, not just prose.\n\n"
+            "**Two ways to crop a figure (complementary, not duplicate):**\n"
+            "- **Document Layout skill (server-side).** Runs inside the skillset on the billable Foundry resource. With "
+            "`extractionOptions=['images','locationMetadata']` it detects figure regions, crops them, and emits each "
+            "crop under `/document/normalized_images/*` together with its `pageNumber` + `boundingPolygons`. The "
+            "skillset's **knowledge-store projections** persist the crops to `search-image-assets` and the location "
+            "metadata to `search-image-assets-meta`.\n"
+            "- **Offline parser (local).** Renders each PDF page and crops figure regions, attaching thumbnails to "
+            "chunks for the citation UI. It is the fallback when the native/server-side path is off.\n\n"
+            "**Why the extractor swap changes OCR quality.** With the default **Document Extraction** extractor the "
+            "indexer's built-in cracker emits *whole-page* normalized images, so `OcrSkill` and `ImageAnalysisSkill` "
+            "(both at `/document/normalized_images/*`) run on entire pages and mostly capture page noise. With "
+            "**Document Layout** those same skills run on *figure-scoped crops*, so OCR reads the figure's own labels. "
+            "On the deep-excavation PDF this took non-empty OCR results from ~12 (whole-page) to ~63 (figure-aware).\n\n"
+            "**Where each signal lands:** the per-image caption (`captions/*/text`) and OCR collections populate the "
+            "**Search-managed enrichment index** (`...-visual-nlp`) that **Agentic** retrieval can draw on; the app also "
+            "merges a **document-level `image_description_text`** back onto every **canonical chunk**, so "
+            "`full_text` / `vector` / `hybrid` gain a visual signal too.\n\n"
+            "**Key lesson:** caption *quality* is document-dependent. Image Analysis 3.2 returns descriptive but generic "
+            "captions (\u201cchart\u201d, \u201cdiagram\u201d, \u201ca diagram of a house\u201d); the big win here is OCR "
+            "density + figure scoping + page/polygon **location metadata**. Always **verify what actually landed**."
         ),
         md("## Step 1 \u2014 Bootstrap"),
         code(SETUP),
-        md("## Step 2 \u2014 Ingest with image + NLP enrichment"),
+        md(
+            "## Step 2 \u2014 Confirm the active extractor\n\n"
+            "The `visual_nlp` profile uses the Document Layout extractor when "
+            "`AZURE_SEARCH_SKILLSET_PREFERRED_EXTRACTOR=document_layout` and a billable Foundry resource is attached. "
+            "When Document Layout is active the indexer runs with `imageAction: none` (the skill does its own "
+            "figure-aware cropping, so the built-in whole-page cracker is turned off)."
+        ),
+        code(
+            "from backend.core.config import settings\n"
+            "print('preferred extractor      :', settings.azure_search_skillset_preferred_extractor)\n"
+            "print('document layout available:', settings.azure_search_document_layout_skill_available)\n"
+            "print('image serving enabled    :', settings.azure_search_enable_image_serving)"
+        ),
+        md("## Step 3 \u2014 Ingest with image + NLP enrichment"),
         code("job = lab.ingest(skill_profile='visual_nlp', reuse=True)\nlab.chunk_overview(job)"),
         md(
             "`chunks_with_image_description` is now **non-zero** - every chunk carries the merged document-level "
-            "`image_description_text` assembled from the Image Analysis captions. The summaries and keyword hints from "
-            "Lab 05 are still present too. The next cell shows the actual captions and figure thumbnails that landed."
-        ),
-        md("## Step 3 \u2014 Inspect what the visual lane actually produced"),
-        code(
-            "import pandas as pd\n\n"
-            "chunks = lab.load_chunks(job)\n"
-            "with_img_desc = [c for c in chunks if (c.get('image_description_text') or '').strip()]\n"
-            "with_thumbs = [c for c in chunks if c.get('image_evidence')]\n"
-            "print('chunks carrying merged image_description_text:', len(with_img_desc))\n"
-            "print('chunks with figure thumbnails (image_evidence):', len(with_thumbs))\n\n"
-            "# The merged visual summary is document-level, so it is identical across chunks -\n"
-            "# print it once to see the Image Analysis captions that were stitched together.\n"
-            "print('\\nDocument-level visual summary (Image Analysis captions):')\n"
-            "print(' ', (with_img_desc[0]['image_description_text'] if with_img_desc else '(none)'))\n\n"
-            "# Per-page figure thumbnails attached by the parser.\n"
-            "pd.DataFrame([\n"
-            "    {\n"
-            "        'section': ' > '.join(c.get('section_path') or []) or '(root)',\n"
-            "        'pages': c.get('page_numbers'),\n"
-            "        'figures_on_page': len(c.get('image_evidence') or []),\n"
-            "    }\n"
-            "    for c in with_thumbs[:8]\n"
-            "])"
+            "`image_description_text` assembled from the figure-scoped Image Analysis captions. The summaries and "
+            "keyword hints from Lab 05 are still present too."
         ),
         md(
-            "## Step 4 \u2014 Hybrid vs Agentic on a visual question\n\n"
+            "## Step 4 \u2014 Inspect the server-side enrichment (OCR + captions)\n\n"
+            "The Document Layout + OCR + Image Analysis skills wrote a per-image caption and OCR collection into the "
+            "`...-visual-nlp` enrichment index. Because the skills ran on **figure crops** (not whole pages), the OCR is "
+            "dense and figure-scoped - real diagram labels rather than page noise."
+        ),
+        code(
+            "vis = lab.enrichment_visual_fields(job)\n"
+            "print('enrichment index   :', vis['index_name'])\n"
+            "print('detected language  :', vis.get('detected_language'))\n"
+            "print('caption count      :', vis.get('image_description_count'))\n"
+            "print('caption sample     :', vis.get('image_description_sample'))\n"
+            "print('OCR results        :', vis.get('ocr_count'),\n"
+            "      '| non-empty:', vis.get('ocr_nonempty_count'))\n"
+            "for t in vis.get('ocr_sample', []):\n"
+            "    print('   OCR:', t[:120])"
+        ),
+        md(
+            "## Step 5 \u2014 Inspect the figure crops + location metadata\n\n"
+            "The skillset's **knowledge-store projections** persisted each figure crop to blob, plus a metadata object "
+            "carrying the figure's `pageNumber` and `boundingPolygons`. This is the Azure-native, *location-aware* "
+            "equivalent of the offline parser's local figure PNGs - and it is what `/api/native-images` serves back as "
+            "citation evidence."
+        ),
+        code(
+            "import pandas as pd\n\n"
+            "assets = lab.figure_assets(job, limit=5)\n"
+            "print('figure crops in search-image-assets      :', assets['crops'])\n"
+            "print('metadata objects in search-image-assets-meta:', assets['metadata'])\n"
+            "pd.DataFrame(assets['samples'])"
+        ),
+        md(
+            "> Note: with the native/server-side path active, figures come from the **knowledge store**, not the "
+            "offline parser, so canonical chunks here carry no `image_evidence` thumbnails - the figure evidence lives "
+            "in `search-image-assets` instead. Set `ENABLE_PARSER_FIGURE_EXTRACTION=true` (and disable native "
+            "multimodal) if you want to compare the parser's page-rendered thumbnails side by side."
+        ),
+        md(
+            "## Step 6 \u2014 Hybrid vs Agentic on a visual question\n\n"
             "**Hybrid** now benefits directly: the merged `image_description_text` is part of every canonical chunk, so "
             "visual vocabulary (\u201cconstruction site\u201d, \u201cchart\u201d) is searchable. **Agentic** can additionally "
-            "consult the Search-managed enrichment index, where the *full* per-image caption and OCR collections live, "
-            "and tends to assemble more cross-section citations."
+            "consult the Search-managed enrichment index, where the *full* per-image caption and (now much richer) OCR "
+            "collections live, and tends to assemble more cross-section citations."
         ),
         code(
             f"QV = {Q_VISUAL!r}\n\n"
@@ -320,15 +351,16 @@ def build_lab06() -> None:
         ),
         md(
             "## Takeaways\n\n"
-            "- With the output field mappings pointed at the per-image nodes and drilled into `captions/*/text`, "
-            "`OcrSkill` and `ImageAnalysisSkill` now produce **real retrievable text** - the enrichment index holds the "
-            "full per-image caption + OCR collections, and a merged summary lands on every canonical chunk.\n"
-            "- **Verify** the signal: inspect the captions and `image_evidence` thumbnails rather than assuming. Caption "
-            "quality is document-dependent - engineering diagrams give generic captions and sparse OCR.\n"
-            "- Hybrid gains the merged visual summary; Agentic additionally taps the full caption/OCR collections in the "
-            "enrichment index.\n"
-            "- `ENABLE_IMAGE_UNDERSTANDING=true` is a separate, optional lane that adds richer **per-figure Foundry "
-            "vision captions** (at extra cost) on top of the built-in Image Analysis signal.\n\n"
+            "- The **Document Layout** extractor crops figures *server-side* and records each figure's `pageNumber` + "
+            "`boundingPolygons` to the knowledge store - figure-aware **and** location-aware.\n"
+            "- Because OCR and Image Analysis now run on figure crops (not whole pages), the OCR is dramatically richer "
+            "(real diagram labels, not page noise). Captions stay generic - judge the *quality* of each signal, not just "
+            "its presence.\n"
+            "- The server-side knowledge-store crops and the offline parser thumbnails solve the same problem in "
+            "complementary ways; with the native path on, figures come from the knowledge store and are served via "
+            "`/api/native-images`.\n"
+            "- Hybrid gains the merged visual summary on every chunk; Agentic additionally taps the full caption/OCR "
+            "collections in the enrichment index.\n\n"
             "Next: **Lab 07** focuses on agentic retrieval mechanics (planning, subqueries, grounded synthesis)."
         ),
     ]

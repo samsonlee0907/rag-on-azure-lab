@@ -19,6 +19,27 @@ Establish the simplest Azure AI Search baseline:
 
 This lab uses the **Baseline Extraction** skill profile, which you select per upload from the UI. You no longer edit `WORKSHOP_SKILL_PROFILE` or restart the app between labs.
 
+## Ingestion Method At A Glance
+
+The baseline profile runs the shortest possible Blob + skillset pipeline. A single built-in skill (`DocumentExtractionSkill`) cracks the file into text; nothing chunks, embeds, or enriches it yet. That intentionally minimal graph is the control group every later lab is measured against.
+
+```mermaid
+flowchart LR
+    Upload["Upload via portal<br/>(Skill Profile = Baseline Extraction)"] --> Blob["Azure Blob container<br/>documents/workshop/&lt;doc_id&gt;/"]
+    Blob --> Indexer["Search indexer<br/>(change detection on<br/>last_modified)"]
+    Indexer --> Skill["DocumentExtractionSkill<br/>file_data -&gt; content_markdown"]
+    Skill --> EnrichIdx["Enrichment index<br/>*-baseline"]
+    Upload --> AppChunk["App chunker<br/>(canonical chunks)"]
+    AppChunk --> CanonIdx["Canonical index<br/>ai-search-lab-index"]
+    CanonIdx --> Query["Full-text query<br/>(BM25 only)"]
+    Query --> Answer["Grounded citations"]
+```
+
+Two indexes are written on every ingest, and it is worth being explicit about the split because it recurs in every lab:
+
+- The **canonical index** (`ai-search-lab-index`) holds the app-owned chunks that the chat retrieval modes actually query.
+- The **enrichment index** (`*-baseline`) is the Search-managed skillset output, which later labs progressively enrich. The baseline keeps it nearly empty so you can watch it fill up as skills are added.
+
 ## Step 1 - Start the app
 
 Always launch through the helper script so `.env` is loaded into the process environment. A raw `uvicorn` invocation does **not** read `.env`, which leaves the Azure feature flags unset and silently disables Search, Foundry, and enrichment:
@@ -123,6 +144,8 @@ return {
 - `DocumentExtractionSkill` turns the Blob file into `content_markdown`.
 - `imageAction=generateNormalizedImages` is important because it prepares image derivatives even before OCR and image analysis are turned on in later labs.
 
+> **Which extractor actually runs?** `_build_extractor_skill` honours a global override, `AZURE_SEARCH_SKILLSET_PREFERRED_EXTRACTOR`. The repo now ships with this set to `document_layout`, so the resource-attached `DocumentIntelligenceLayoutSkill` replaces `DocumentExtractionSkill` as the cracking step across all profiles (it emits the same `content_markdown` plus figure-aware crops used in Lab 06). The lexical baseline behaves the same either way; set the variable back to `document_extraction` if you want the literal minimal skill shown above. The selection logic lives in `_active_extractor_kind`.
+
 Baseline retrieval is intentionally simple:
 
 ```python
@@ -136,6 +159,39 @@ if retrieval_mode == "full_text":
 - This is plain lexical search over the canonical chunk index.
 - It is deliberately kept to pure BM25 so it stays an honest lexical control group. The semantic ranker (L2 reranking) is not added until `hybrid` in Lab 04, which keeps the lexical-versus-semantic comparison clean.
 - It is the right baseline for demonstrating term sensitivity and lexical misses.
+
+### How the app turns your question into a Search request
+
+The chat box does not call Azure directly. The question flows through `_build_direct_search_body`, which assembles the JSON request body for the chosen mode, and `_run_direct_search`, which POSTs it to the index. For the baseline the body is about as small as a Search request gets - a query string, a row cap, a field projection, and an optional corpus filter:
+
+```python
+# backend/services/indexing.py - _build_direct_search_body (full_text branch)
+body: dict[str, Any] = {
+    "top": DIRECT_SEARCH_TOP,
+    "count": True,
+    "select": self._direct_search_select_fields(),   # chunk_id, clean_text, page_numbers, ...
+}
+if filter_expression:
+    body["filter"] = filter_expression               # restrict to the selected corpus
+
+if retrieval_mode == "full_text":
+    body["search"] = question                        # BM25 over searchable fields
+    if applied_scoring_profile:
+        body["scoringProfile"] = applied_scoring_profile
+    return body
+```
+
+```python
+# backend/services/indexing.py - _run_direct_search (the actual call)
+url = f"{self.endpoint}/indexes/{source.index_name}/docs/search?api-version=2025-09-01"
+response = requests.post(url, headers=self.headers, data=json.dumps(body), timeout=60)
+self._raise_for_status(response)
+payload = response.json()
+```
+
+- `select` keeps the response lean by returning only the fields the chat UI renders as citations.
+- `filter` is how `Custom Selection` scopes the query to just the corpus you picked.
+- Notice there is no `vectorQueries`, no `queryType`, and no `scoringProfile` by default - that minimalism is exactly what makes this the lexical control group.
 
 ## Index Lifecycle: Freshness, Change Detection, And Deletion
 

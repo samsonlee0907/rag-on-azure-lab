@@ -4,6 +4,7 @@ import json
 import logging
 from pathlib import Path
 import shutil
+from collections import OrderedDict
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -48,6 +49,19 @@ static_dir = Path.cwd() / "frontend" / "static"
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 _WORKSHOP_PROFILE_TITLES = {profile.id: profile.title for profile in build_workshop_skill_profiles()}
+
+# Small in-process LRU-ish cache for served native crops. Crops are immutable once the
+# skillset projects them, so caching their bytes avoids re-downloading the same figure
+# from Blob storage on every answer re-render. Bounded to keep memory flat.
+_NATIVE_IMAGE_CACHE: "OrderedDict[str, tuple[bytes, str]]" = OrderedDict()
+_NATIVE_IMAGE_CACHE_MAX_ENTRIES = 256
+
+
+def _native_image_cache_put(key: str, content: bytes, content_type: str) -> None:
+    _NATIVE_IMAGE_CACHE[key] = (content, content_type)
+    _NATIVE_IMAGE_CACHE.move_to_end(key)
+    while len(_NATIVE_IMAGE_CACHE) > _NATIVE_IMAGE_CACHE_MAX_ENTRIES:
+        _NATIVE_IMAGE_CACHE.popitem(last=False)
 
 
 def _job_or_404(doc_id: str) -> JobRecord:
@@ -454,6 +468,14 @@ def get_native_image(path: str) -> Response:
     normalized = path.strip().strip("/")
     if not normalized:
         raise HTTPException(status_code=400, detail="path is required.")
+    cached = _NATIVE_IMAGE_CACHE.get(normalized)
+    if cached is not None:
+        content, content_type = cached
+        return Response(
+            content=content,
+            media_type=content_type,
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
     store = build_blob_search_asset_store()
     if store is None:
         raise HTTPException(status_code=503, detail="Azure AI Search native image serving is not configured.")
@@ -461,7 +483,14 @@ def get_native_image(path: str) -> Response:
         content, content_type = store.download_bytes(normalized)
     except Exception as exc:
         raise HTTPException(status_code=404, detail=f"Native image asset not found: {exc}") from exc
-    return Response(content=content, media_type=content_type)
+    _native_image_cache_put(normalized, content, content_type)
+    # Crops are immutable once projected, so let the browser cache them for a day to
+    # avoid re-fetching the same figure on every answer re-render.
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 @app.post("/api/documents/{doc_id}/retry")

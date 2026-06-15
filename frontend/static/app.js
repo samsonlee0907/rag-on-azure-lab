@@ -774,9 +774,17 @@ function collectImageEvidence(citations, answerText = "") {
   const seen = new Set();
   const images = [];
   for (const citation of eligibleCitations) {
-    const renderVisualAssets = hasVisualIntent(
-      [answerText, citation.supporting_query, citation.snippet, citation.title].filter(Boolean).join(" ")
-    );
+    // If retrieval actually grounded this citation with figure evidence (parser
+    // artifacts or native Document Layout crops), show it regardless of whether the
+    // question/answer text happened to use a visual keyword. The presence of the
+    // image IS the relevance signal. The keyword heuristic only acts as a fallback.
+    const citationHasImages =
+      (citation.image_evidence?.length || 0) > 0 || (citation.asset_image_paths?.length || 0) > 0;
+    const renderVisualAssets =
+      citationHasImages ||
+      hasVisualIntent(
+        [answerText, citation.supporting_query, citation.snippet, citation.title].filter(Boolean).join(" ")
+      );
     if (!renderVisualAssets) {
       continue;
     }
@@ -822,7 +830,7 @@ function renderEvidenceImageCards(images, limit = 4) {
     .map(
       (image) => `
       <figure class="image-evidence-card">
-        <img src="${buildEvidenceImageSrc(image)}" alt="${escapeHtml(buildEvidenceImageAlt(image))}" loading="lazy" />
+        <img src="${buildEvidenceImageSrc(image)}" alt="${escapeHtml(buildEvidenceImageAlt(image))}" loading="lazy" onerror="this.closest('figure').remove()" />
         <figcaption>${escapeHtml(buildEvidenceImageAlt(image))}</figcaption>
       </figure>
     `
@@ -912,11 +920,19 @@ function renderCitations(citations, diagnostics = {}, answerText = "") {
           .map(
             (item) => {
               const isReferenced = referencedIds.has(Number(item.reference_id));
+              // Within the citations the answer actually used (or all of them when the
+              // answer has no inline markers), show grounded figure evidence whenever the
+              // citation carries it. Falling back to the visual-intent keyword heuristic
+              // only matters when no images were attached.
+              const citationHasImages =
+                (item.image_evidence?.length || 0) > 0 || (item.asset_image_paths?.length || 0) > 0;
+              const isEligibleForImages = referencedIds.size === 0 || isReferenced;
               const renderVisualAssets =
-                referencedIds.size === 0
-                  ? hasVisualIntent([item.supporting_query, item.snippet, item.title].filter(Boolean).join(" "))
-                  : isReferenced &&
-                    hasVisualIntent([answerText, item.supporting_query, item.snippet, item.title].filter(Boolean).join(" "));
+                isEligibleForImages &&
+                (citationHasImages ||
+                  hasVisualIntent(
+                    [answerText, item.supporting_query, item.snippet, item.title].filter(Boolean).join(" ")
+                  ));
               return `
           <article class="citation-card ${isReferenced ? "citation-card-used" : ""}" id="citation-ref-${item.reference_id}" data-citation-card="${item.reference_id}">
             <div class="citation-card-head">

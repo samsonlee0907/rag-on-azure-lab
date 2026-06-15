@@ -179,13 +179,10 @@ class SearchSkillsetEnrichmentTests(unittest.TestCase):
             "backend.services.search_skillset_enrichment.settings.azure_search_skillset_preferred_extractor",
             "content_understanding",
         ), patch(
-            "backend.services.search_skillset_enrichment.settings.azure_content_understanding_endpoint",
+            "backend.services.search_skillset_enrichment.settings.azure_foundry_resource_endpoint",
             "",
         ), patch(
-            "backend.services.search_skillset_enrichment.settings.azure_content_understanding_key",
-            "",
-        ), patch(
-            "backend.services.search_skillset_enrichment.settings.azure_content_understanding_analyzer_id",
+            "backend.services.search_skillset_enrichment.settings.azure_foundry_api_key",
             "",
         ), patch(
             "backend.services.search_skillset_enrichment.settings.workshop_strict_mode",
@@ -193,6 +190,86 @@ class SearchSkillsetEnrichmentTests(unittest.TestCase):
         ):
             with self.assertRaises(RuntimeError):
                 service._active_extractor_kind()
+
+    def test_document_layout_extractor_requires_resource_in_workshop_mode(self) -> None:
+        service = AzureSearchSkillsetEnrichmentService()
+
+        with patch(
+            "backend.services.search_skillset_enrichment.settings.azure_search_skillset_preferred_extractor",
+            "document_layout",
+        ), patch(
+            "backend.services.search_skillset_enrichment.settings.azure_foundry_resource_endpoint",
+            "",
+        ), patch(
+            "backend.services.search_skillset_enrichment.settings.azure_foundry_api_key",
+            "",
+        ), patch(
+            "backend.services.search_skillset_enrichment.settings.workshop_strict_mode",
+            True,
+        ):
+            with self.assertRaises(RuntimeError):
+                service._active_extractor_kind()
+
+    def test_document_layout_skillset_emits_layout_skill_merge_and_knowledge_store(self) -> None:
+        service = AzureSearchSkillsetEnrichmentService()
+
+        with (
+            patch("backend.services.search_skillset_enrichment.settings.workshop_skill_profile", "visual_nlp"),
+            patch("backend.services.search_skillset_enrichment.settings.azure_search_skillset_preferred_extractor", "document_layout"),
+            patch("backend.services.search_skillset_enrichment.settings.azure_foundry_resource_endpoint", "https://example.cognitiveservices.azure.com/"),
+            patch("backend.services.search_skillset_enrichment.settings.azure_search_enable_image_serving", True),
+            patch("backend.services.search_skillset_enrichment.settings.azure_search_asset_store_connection_string", "UseDevelopmentStorage=true"),
+            patch("backend.services.search_skillset_enrichment.settings.azure_search_asset_store_container", "search-image-assets"),
+            patch("backend.services.search_skillset_enrichment.settings.azure_search_asset_store_metadata_container", "search-image-assets-meta"),
+        ):
+            body = service._build_skillset_body()
+
+        skills_by_name = {skill["name"]: skill for skill in body["skills"]}
+        layout = skills_by_name["#documentLayout"]
+        self.assertEqual(layout["@odata.type"], "#Microsoft.Skills.Util.DocumentIntelligenceLayoutSkill")
+        self.assertEqual(layout["extractionOptions"], ["images", "locationMetadata"])
+        layout_outputs = {output["name"]: output["targetName"] for output in layout["outputs"]}
+        self.assertEqual(layout_outputs["normalized_images"], "normalized_images")
+        self.assertEqual(layout_outputs["text_sections"], "dl_text_sections")
+
+        merge = skills_by_name["#mergeDocumentLayout"]
+        self.assertEqual(merge["inputs"][0]["source"], "/document/dl_text_sections/*/content")
+        self.assertEqual(merge["outputs"][0]["targetName"], "content_markdown")
+
+        # The Document Layout figure crops feed the same downstream visual NLP skills.
+        skill_types = [skill["@odata.type"] for skill in body["skills"]]
+        self.assertIn("#Microsoft.Skills.Vision.OcrSkill", skill_types)
+        self.assertIn("#Microsoft.Skills.Vision.ImageAnalysisSkill", skill_types)
+
+        knowledge_store = body["knowledgeStore"]
+        self.assertEqual(knowledge_store["storageConnectionString"], "UseDevelopmentStorage=true")
+        projections = knowledge_store["projections"]
+        self.assertEqual(projections[0]["files"][0]["storageContainer"], "search-image-assets")
+        self.assertEqual(projections[0]["files"][0]["source"], "/document/normalized_images/*")
+        self.assertEqual(projections[1]["objects"][0]["storageContainer"], "search-image-assets-meta")
+
+    def test_document_layout_indexer_disables_built_in_image_action(self) -> None:
+        service = AzureSearchSkillsetEnrichmentService()
+
+        with (
+            patch("backend.services.search_skillset_enrichment.settings.workshop_skill_profile", "visual_nlp"),
+            patch("backend.services.search_skillset_enrichment.settings.azure_search_skillset_preferred_extractor", "document_layout"),
+            patch("backend.services.search_skillset_enrichment.settings.azure_foundry_resource_endpoint", "https://example.cognitiveservices.azure.com/"),
+        ):
+            body = service._build_indexer_body()
+
+        self.assertEqual(body["parameters"]["configuration"]["imageAction"], "none")
+        self.assertEqual(body["parameters"]["configuration"]["allowSkillsetToReadFileData"], True)
+
+    def test_document_extraction_indexer_keeps_built_in_image_action(self) -> None:
+        service = AzureSearchSkillsetEnrichmentService()
+
+        with patch("backend.services.search_skillset_enrichment.settings.workshop_skill_profile", "visual_nlp"):
+            body = service._build_indexer_body()
+
+        self.assertEqual(
+            body["parameters"]["configuration"]["imageAction"], "generateNormalizedImages"
+        )
 
     @patch("backend.services.search_skillset_enrichment.settings.azure_search_default_rbac_scope_ids", new=("engineering", "reviewers"))
     def test_apply_enrichment_to_document_propagates_blob_summary_keywords_and_rbac(self) -> None:

@@ -135,11 +135,14 @@ class NativeMultimodalSearchService:
     def delete_document_source(self, knowledge_source_name: str | None) -> None:
         if not self.enabled or not knowledge_source_name:
             return
+        # Azure Search forbids deleting a knowledge source while a knowledge base still
+        # references it (OperationNotAllowed / KnowledgeSourceStillReferenced). Update the
+        # knowledge base FIRST to drop the reference, then delete the source resource.
+        self.sync_knowledge_base(excluded_source_names=[knowledge_source_name])
         url = f"{self.endpoint}/knowledgesources('{knowledge_source_name}')?api-version={self.api_version}"
         response = requests.delete(url, headers=self.headers, timeout=60)
         if response.status_code not in {200, 204, 404}:
             self._raise_for_status(response)
-        self.sync_knowledge_base(excluded_source_names=[knowledge_source_name])
 
     def chat(self, question: str, *, knowledge_source_names: list[str]) -> dict[str, Any]:
         if not self.enabled:

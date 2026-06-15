@@ -22,6 +22,36 @@ Then compare:
 
 This lab uses the **Chunking And Vectorization** skill profile, selected per upload from the UI.
 
+## Ingestion Method At A Glance
+
+This profile keeps the same extractor but adds two built-in skills - `SplitSkill` to break `content_markdown` into chunk-sized pages, and `AzureOpenAIEmbeddingSkill` to vectorize them. The result is an enrichment index that now carries embeddings, plus a canonical index whose vectors are computed app-side so query and document vectors come from the same model.
+
+```mermaid
+flowchart LR
+    Blob["Blob file"] --> Extract["DocumentExtractionSkill /<br/>DocumentLayoutSkill<br/>-&gt; content_markdown"]
+    Extract --> Split["SplitSkill<br/>pages, 1500 chars, 150 overlap"]
+    Split --> Embed["AzureOpenAIEmbeddingSkill<br/>-&gt; content_vector (3072 dims)"]
+    Embed --> EnrichIdx["Enrichment index<br/>*-chunk-vector"]
+    Blob --> AppChunk["App chunker +<br/>_embed_chunks_for_index"]
+    AppChunk --> CanonIdx["Canonical index<br/>(HNSW vector field)"]
+    CanonIdx --> Modes{"Retrieval mode"}
+    Modes -->|full_text| BM25["BM25 only"]
+    Modes -->|vector| HNSW["HNSW similarity"]
+    Modes -->|hybrid| Fuse["BM25 + HNSW -&gt; RRF -&gt; semantic ranker"]
+```
+
+The single most important idea in this lab is what happens inside the `hybrid` branch, where two independently ranked lists are fused and then reranked:
+
+```mermaid
+flowchart TD
+    Q["User question"] --> L["BM25 lexical search<br/>(@search.score)"]
+    Q --> V["HNSW vector search<br/>(@search.score)"]
+    L --> RRF["Reciprocal Rank Fusion<br/>combined @search.score"]
+    V --> RRF
+    RRF --> Sem["Semantic ranker (L2)<br/>@search.rerankerScore 0-4 + captions"]
+    Sem --> Top["Final ordered citations"]
+```
+
 ## Step 1 - Start the app
 
 Launch through the helper script if it is not already running:

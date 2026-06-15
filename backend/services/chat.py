@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import base64
 import difflib
 import json
 import re
+import threading
+import time
 from pathlib import PurePosixPath
 from pathlib import Path
 from typing import Any
@@ -11,6 +14,7 @@ import requests
 
 from backend.core.config import settings
 from backend.domain.models import ChatCitation, ChatTurnResponse, ChunkRecord
+from backend.services.blob_storage import BaseBlobStore, build_blob_search_asset_store
 from backend.services.foundry_openai import call_foundry_text
 from backend.services.job_store import job_store
 
@@ -744,9 +748,115 @@ def _snippet_fingerprint(snippet: str) -> str:
     return re.sub(r"\s+", " ", snippet.strip().lower())[:220]
 
 
+_NATIVE_FIGURE_CACHE: dict[str, Any] = {"expires": 0.0, "map": {}}
+_NATIVE_FIGURE_CACHE_TTL_SECONDS = 120
+_NATIVE_FIGURE_CACHE_LOCK = threading.Lock()
+
+
+def _decode_doc_id_from_asset_name(name: str) -> str:
+    """Decode a knowledge-store projection blob name back to its source doc id.
+
+    Projection blobs are named ``base64url(source_uri)/normalized_image*`` where
+    ``source_uri`` carries ``.../workshop/<doc_id>/<file>``.
+    """
+    prefix = name.split("/normalized_image")[0]
+    pad = "=" * (-len(prefix) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(prefix + pad).decode("utf-8", "replace")
+    except Exception:
+        return ""
+    match = re.search(r"workshop/([0-9a-f]{32})/", decoded)
+    return match.group(1) if match else ""
+
+
+def _build_native_figure_page_map() -> dict[str, dict[int, list[str]]]:
+    """Map ``{doc_id: {page_number: [servable_crop_path, ...]}}`` from the Document
+    Layout knowledge-store metadata projections.
+
+    The Document Layout skill crops figures server-side and the skillset's
+    knowledge-store projections persist each crop plus its ``pageNumber`` to blob.
+    This lets canonical (hybrid/agentic) citations surface the native crops as
+    visual evidence, matched by page. Best-effort: returns ``{}`` on any failure so
+    chat retrieval never breaks.
+    """
+    if not settings.azure_search_enable_image_serving:
+        return {}
+    connection_string = (
+        settings.azure_search_asset_store_connection_string
+        or settings.azure_search_blob_connection_string_resolved
+    )
+    try:
+        meta_store = BaseBlobStore(
+            container_name=settings.azure_search_asset_store_metadata_container,
+            connection_string=connection_string,
+            account_url=settings.azure_blob_account_url,
+            account_key=settings.azure_storage_account_key,
+        )
+        names = meta_store.list_blobs()
+    except Exception:
+        return {}
+
+    # The metadata projections can reference more crops than were actually persisted
+    # to the asset container (the skill emits a metadata record per detected figure,
+    # but only servable crops land as blobs). Listing the crop container once lets us
+    # drop dangling ``imagePath`` references so citations never surface a crop URL that
+    # 404s into a broken image in the portal. Best-effort: if the listing fails we fall
+    # back to trusting the metadata as before.
+    servable_crops: set[str] | None = None
+    try:
+        crop_store = BaseBlobStore(
+            container_name=settings.azure_search_asset_store_container,
+            connection_string=connection_string,
+            account_url=settings.azure_blob_account_url,
+            account_key=settings.azure_storage_account_key,
+        )
+        servable_crops = set(crop_store.list_blobs())
+    except Exception:
+        servable_crops = None
+
+    figure_map: dict[str, dict[int, list[str]]] = {}
+    for name in names:
+        doc_id = _decode_doc_id_from_asset_name(name)
+        if not doc_id:
+            continue
+        try:
+            payload, _ = meta_store.download_bytes(name)
+            doc = json.loads(payload)
+        except Exception:
+            continue
+        image_path = doc.get("imagePath") or doc.get("name")
+        if not image_path:
+            continue
+        image_path = str(image_path)
+        if servable_crops is not None and image_path not in servable_crops:
+            continue
+        location = doc.get("locationMetadata") or {}
+        try:
+            page = int(location.get("pageNumber"))
+        except (TypeError, ValueError):
+            continue
+        figure_map.setdefault(doc_id, {}).setdefault(page, []).append(image_path)
+    return figure_map
+
+
+def _native_figure_page_map() -> dict[str, dict[int, list[str]]]:
+    """Return the native figure page map, cached for a short TTL to avoid listing /
+    downloading the metadata projections on every chat turn."""
+    now = time.monotonic()
+    with _NATIVE_FIGURE_CACHE_LOCK:
+        if now < _NATIVE_FIGURE_CACHE["expires"] and _NATIVE_FIGURE_CACHE["map"]:
+            return _NATIVE_FIGURE_CACHE["map"]
+    figure_map = _build_native_figure_page_map()
+    with _NATIVE_FIGURE_CACHE_LOCK:
+        _NATIVE_FIGURE_CACHE["map"] = figure_map
+        _NATIVE_FIGURE_CACHE["expires"] = now + _NATIVE_FIGURE_CACHE_TTL_SECONDS
+    return figure_map
+
+
 def _hydrate_citations(citations: list[ChatCitation]) -> list[ChatCitation]:
     jobs, jobs_by_doc_id, jobs_by_title, jobs_by_uri = _job_lookup()
     figures_by_doc_id: dict[str, list[dict[str, Any]]] = {}
+    native_figure_map = _native_figure_page_map()
     for citation in citations:
         matched_job = jobs_by_doc_id.get(citation.doc_id) if citation.doc_id else None
         if not matched_job:
@@ -762,6 +872,28 @@ def _hydrate_citations(citations: list[ChatCitation]) -> list[ChatCitation]:
         if not citation.page_numbers:
             citation.page_numbers = _infer_page_numbers(citation.snippet)
         citation.page_numbers = _normalize_page_numbers(citation.page_numbers)
+
+        # Attach Document Layout knowledge-store crops (native path) as visual evidence,
+        # matched by page number. The offline parser's image_evidence is empty when the
+        # native multimodal path is active, so this is what surfaces figures in
+        # hybrid / agentic / vector / full_text citations.
+        if not citation.asset_image_paths and citation.doc_id and citation.page_numbers:
+            doc_figures = native_figure_map.get(citation.doc_id)
+            if doc_figures:
+                native_paths: list[str] = []
+                seen_native_paths: set[str] = set()
+                for page in citation.page_numbers:
+                    for path in doc_figures.get(page, []):
+                        if path in seen_native_paths:
+                            continue
+                        seen_native_paths.add(path)
+                        native_paths.append(path)
+                        if len(native_paths) >= MAX_IMAGE_EVIDENCE_PER_CITATION:
+                            break
+                    if len(native_paths) >= MAX_IMAGE_EVIDENCE_PER_CITATION:
+                        break
+                citation.asset_image_paths = native_paths
+
         figures = figures_by_doc_id.get(citation.doc_id)
         if figures is None:
             intermediate = json.loads(Path(matched_job.intermediate_path).read_text(encoding="utf-8"))

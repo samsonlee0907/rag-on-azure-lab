@@ -20,6 +20,11 @@ Recommended active profile:
 - `genai_enrichment` for text-heavy documents
 - `visual_nlp` for diagram-heavy documents
 
+> The `visual_nlp` corpus is now built with the **Document Layout** extractor (Lab 06), so its
+> figure crops are figure-aware and carry page / bounding-polygon metadata. Agentic retrieval over
+> that corpus draws on the same `-visual-nlp` enrichment index (richer OCR + captions), so questions
+> that reference "supporting figures" have cleaner visual evidence to reason over.
+
 ## Step 1 - Keep one corpus selected
 
 Use `Custom Selection` and pick exactly one ready corpus first. That makes the retrieval activity easier to explain.
@@ -64,6 +69,8 @@ The point of this lab is not that agentic retrieval always returns more steps. T
 - the debug panel shows `retrieval_mode = agentic`
 - the activity panel shows retrieval routing and any exposed subqueries
 - the answer remains grounded with citations
+- on the `visual_nlp` corpus, citations that land on a figure page also show figure cards - the same
+  query-time crop join that `Hybrid` uses applies to agentic citations
 
 ## Code Walkthrough
 
@@ -106,6 +113,26 @@ payload = {
 - `knowledgeSourceParams` is how the app scopes the retrieve call to the selected corpus or corpora.
 - `includeActivity` is why the portal can show the routing summary and the visible search steps.
 - `retrievalReasoningEffort` is one of the easiest configuration knobs to demonstrate live.
+
+### Figure evidence works in agentic mode too
+
+Agentic retrieval returns its own citations from the knowledge base, but it does **not** need a
+separate image path. After the knowledge base returns, the same query-time figure join from Lab 06
+(`_hydrate_citations` + `_build_native_figure_page_map` in
+[backend/services/chat.py](../../backend/services/chat.py)) runs over the agentic citations and
+attaches figure crops by `doc_id` + page number - exactly as it does for `Hybrid`, `Vector`, and
+`Full text`:
+
+```python
+# backend/services/chat.py - one chokepoint runs for every retrieval mode, agentic included
+citations = _hydrate_citations(citations)   # joins native figure crops onto citations by page
+```
+
+- This is why an agentic answer over the `visual_nlp` corpus shows the same figure cards as a hybrid
+  answer: the join keys on the citation's document and pages, not on which retrieval mode produced it.
+- If you ask a "use any supporting figures" question in `Agentic retrieval` and see figure cards
+  under the citations, that join is doing its work. (If figures appear in `Hybrid` but not `Agentic`,
+  it is almost always a stale browser cache - hard-refresh with Ctrl+F5.)
 
 ## Configuration Knobs
 
