@@ -19,6 +19,10 @@ Establish the simplest Azure AI Search baseline:
 
 This lab uses the **Baseline Extraction** skill profile, which you select per upload from the UI. You no longer edit `WORKSHOP_SKILL_PROFILE` or restart the app between labs.
 
+The workshop's baseline corpus is based on the CEDD report
+[*Deep Excavation Design and Construction*](https://www.cedd.gov.hk/filemanager/eng/content_1024/ep1_2023.pdf)
+(GEO Publication No. 1/2023), which is the same anchor document used throughout the notebook walkthroughs.
+
 ## Ingestion Method At A Glance
 
 The baseline profile runs the shortest possible Blob + skillset pipeline. A single built-in skill (`DocumentExtractionSkill`) cracks the file into text; nothing chunks, embeds, or enriches it yet. That intentionally minimal graph is the control group every later lab is measured against.

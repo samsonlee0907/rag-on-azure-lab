@@ -14,6 +14,10 @@ Add a second, separate knowledge source on a different topic and watch the knowl
 
 Until now every lab has searched a single corpus - the deep-excavation engineering document. This lab introduces a **second corpus on a completely unrelated topic** (the future of generative AI) so you can see source selection in action. The deployed assistant already supports this; you only register the extra source and ingest a document into it.
 
+The second corpus is based on McKinsey's
+[*What's the future of generative AI? An early view in 15 charts*](https://www.mckinsey.com/~/media/mckinsey/featured%20insights/mckinsey%20explainers/whats%20the%20future%20of%20generative%20ai%20an%20early%20view%20in%2015%20charts/whats-the-future-of-generative-ai-an-early-view-in-15-charts.pdf)
+report, which is why the sample file and routing keywords lean toward generative-AI forecast language.
+
 ## Concept - Two routing layers
 
 There are **two different mechanisms** that decide which index answers a question, depending on the retrieval mode:

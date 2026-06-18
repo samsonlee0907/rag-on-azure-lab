@@ -6,7 +6,12 @@ against live Azure AI Search, so the committed outputs are real ingestion stats,
 real retrieval hits, and real grounded answers (not mock-ups).
 
 All notebooks use one anchor document so results are directly comparable:
-*Deep Excavation Design and Construction* (GEO Publication No. 1/2023).
+[*Deep Excavation Design and Construction*](https://www.cedd.gov.hk/filemanager/eng/content_1024/ep1_2023.pdf)
+(GEO Publication No. 1/2023).
+
+The multi-source lab adds a second corpus based on McKinsey's
+[*What's the future of generative AI? An early view in 15 charts*](https://www.mckinsey.com/~/media/mckinsey/featured%20insights/mckinsey%20explainers/whats%20the%20future%20of%20generative%20ai%20an%20early%20view%20in%2015%20charts/whats-the-future-of-generative-ai-an-early-view-in-15-charts.pdf)
+report.
 
 ## Notebooks
 

@@ -216,6 +216,11 @@ for details. The final [comparison notebook](./notebooks/lab-10-comparison-summa
 puts full-text, vector, hybrid, and agentic retrieval side-by-side on the same two
 questions to make the trade-offs concrete.
 
+The main anchor document for Labs 03 through 08 is the CEDD report
+[*Deep Excavation Design and Construction*](https://www.cedd.gov.hk/filemanager/eng/content_1024/ep1_2023.pdf).
+Lab 09 adds a second corpus built from McKinsey's report
+[*What's the future of generative AI? An early view in 15 charts*](https://www.mckinsey.com/~/media/mckinsey/featured%20insights/mckinsey%20explainers/whats%20the%20future%20of%20generative%20ai%20an%20early%20view%20in%2015%20charts/whats-the-future-of-generative-ai-an-early-view-in-15-charts.pdf).
+
 ## Architecture
 
 ```mermaid
